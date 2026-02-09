@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package microdns;
+
+// Zone management service
+service ZoneService {
+  rpc ListZones(ListZonesRequest) returns (ListZonesResponse);
+  rpc GetZone(GetZoneRequest) returns (Zone);
+  rpc CreateZone(CreateZoneRequest) returns (Zone);
+  rpc DeleteZone(DeleteZoneRequest) returns (DeleteZoneResponse);
+}
+
+// Record management service
+service RecordService {
+  rpc ListRecords(ListRecordsRequest) returns (ListRecordsResponse);
+  rpc CreateRecord(CreateRecordRequest) returns (Record);
+  rpc UpdateRecord(UpdateRecordRequest) returns (Record);
+  rpc DeleteRecord(DeleteRecordRequest) returns (DeleteRecordResponse);
+}
+
+// Lease management service
+service LeaseService {
+  rpc ListLeases(ListLeasesRequest) returns (ListLeasesResponse);
+}
+
+// Cluster/federation service
+service ClusterService {
+  rpc GetClusterStatus(ClusterStatusRequest) returns (ClusterStatusResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc PushConfig(PushConfigRequest) returns (PushConfigResponse);
+}
+
+// Health check service
+service HealthService {
+  rpc GetHealthStatus(HealthStatusRequest) returns (HealthStatusResponse);
+}
+
+// Zone messages
+message ListZonesRequest {}
+
+message ListZonesResponse {
+  repeated Zone zones = 1;
+}
+
+message GetZoneRequest {
+  string zone_id = 1;
+}
+
+message CreateZoneRequest {
+  string name = 1;
+  string mname = 2;
+  string rname = 3;
+  uint32 default_ttl = 4;
+}
+
+message DeleteZoneRequest {
+  string zone_id = 1;
+}
+
+message DeleteZoneResponse {
+  bool success = 1;
+}
+
+message Zone {
+  string id = 1;
+  string name = 2;
+  SoaData soa = 3;
+  uint32 default_ttl = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message SoaData {
+  string mname = 1;
+  string rname = 2;
+  uint32 serial = 3;
+  uint32 refresh = 4;
+  uint32 retry = 5;
+  uint32 expire = 6;
+  uint32 minimum = 7;
+}
+
+// Record messages
+message ListRecordsRequest {
+  string zone_id = 1;
+}
+
+message ListRecordsResponse {
+  repeated Record records = 1;
+}
+
+message CreateRecordRequest {
+  string zone_id = 1;
+  string name = 2;
+  uint32 ttl = 3;
+  string record_type = 4;
+  string data_json = 5;
+  bool enabled = 6;
+}
+
+message UpdateRecordRequest {
+  string record_id = 1;
+  string name = 2;
+  uint32 ttl = 3;
+  string data_json = 4;
+  bool enabled = 5;
+}
+
+message DeleteRecordRequest {
+  string record_id = 1;
+}
+
+message DeleteRecordResponse {
+  bool success = 1;
+}
+
+message Record {
+  string id = 1;
+  string zone_id = 2;
+  string name = 3;
+  uint32 ttl = 4;
+  string record_type = 5;
+  string data_json = 6;
+  bool enabled = 7;
+  string created_at = 8;
+  string updated_at = 9;
+}
+
+// Lease messages
+message ListLeasesRequest {}
+
+message ListLeasesResponse {
+  repeated Lease leases = 1;
+}
+
+message Lease {
+  string id = 1;
+  string ip_addr = 2;
+  string mac_addr = 3;
+  string hostname = 4;
+  string lease_start = 5;
+  string lease_end = 6;
+  string pool_id = 7;
+  string state = 8;
+}
+
+// Cluster messages
+message ClusterStatusRequest {}
+
+message ClusterStatusResponse {
+  string instance_id = 1;
+  repeated InstanceInfo instances = 2;
+}
+
+message InstanceInfo {
+  string instance_id = 1;
+  string mode = 2;
+  uint64 uptime_secs = 3;
+  uint64 active_leases = 4;
+  uint64 zones_served = 5;
+  string last_seen = 6;
+  bool healthy = 7;
+}
+
+message HeartbeatRequest {
+  string instance_id = 1;
+  string mode = 2;
+  uint64 uptime_secs = 3;
+  uint64 active_leases = 4;
+  uint64 zones_served = 5;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+}
+
+message PushConfigRequest {
+  string target_instance_id = 1;
+  string config_toml = 2;
+}
+
+message PushConfigResponse {
+  bool success = 1;
+}
+
+// Health messages
+message HealthStatusRequest {}
+
+message HealthStatusResponse {
+  repeated RecordHealth records = 1;
+}
+
+message RecordHealth {
+  string record_id = 1;
+  string record_name = 2;
+  string zone_name = 3;
+  bool healthy = 4;
+  uint32 success_count = 5;
+  uint32 failure_count = 6;
+}

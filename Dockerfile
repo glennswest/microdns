@@ -1,0 +1,79 @@
+# Multi-stage build for MicroDNS
+# Produces a minimal scratch image with a static binary
+
+# Stage 1: Build
+FROM rust:1.88-bookworm AS builder
+
+# Install protobuf compiler and musl tools
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add musl target
+RUN rustup target add aarch64-unknown-linux-musl
+
+WORKDIR /build
+
+# Copy manifests first for dependency caching
+COPY Cargo.toml Cargo.lock ./
+COPY crates/microdns-core/Cargo.toml crates/microdns-core/
+COPY crates/microdns-auth/Cargo.toml crates/microdns-auth/
+COPY crates/microdns-api/Cargo.toml crates/microdns-api/
+COPY crates/microdns-recursor/Cargo.toml crates/microdns-recursor/
+COPY crates/microdns-lb/Cargo.toml crates/microdns-lb/
+COPY crates/microdns-dhcp/Cargo.toml crates/microdns-dhcp/
+COPY crates/microdns-msg/Cargo.toml crates/microdns-msg/
+COPY crates/microdns-federation/Cargo.toml crates/microdns-federation/
+
+# Create dummy source files for dependency compilation
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
+    for crate in microdns-core microdns-auth microdns-api microdns-recursor microdns-lb microdns-dhcp microdns-msg microdns-federation; do \
+        mkdir -p crates/$crate/src && echo '' > crates/$crate/src/lib.rs; \
+    done
+
+# Copy build script and proto file needed for API crate
+COPY crates/microdns-api/build.rs crates/microdns-api/
+COPY proto/ proto/
+
+# Build dependencies only (cached layer)
+RUN cargo build --release --target aarch64-unknown-linux-musl 2>/dev/null || true
+
+# Copy actual source code
+COPY . .
+
+# Touch source files to invalidate cache for actual sources only
+RUN find . -name "*.rs" -exec touch {} +
+
+# Build release binary
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+RUN cargo build --release --target aarch64-unknown-linux-musl
+
+# Stage 2: Runtime (scratch)
+FROM scratch
+
+# Copy the static binary
+COPY --from=builder /build/target/aarch64-unknown-linux-musl/release/microdns /microdns
+
+# Copy default config
+COPY config/microdns.toml /etc/microdns/microdns.toml
+
+# Create data directory
+VOLUME ["/data"]
+
+# Expose ports
+# DNS (auth)
+EXPOSE 53/udp
+EXPOSE 53/tcp
+# DNS (recursor)
+EXPOSE 5353/udp
+# DHCP
+EXPOSE 67/udp
+EXPOSE 547/udp
+# REST API
+EXPOSE 8080/tcp
+# gRPC
+EXPOSE 50051/tcp
+
+ENTRYPOINT ["/microdns"]
+CMD ["--config", "/etc/microdns/microdns.toml"]

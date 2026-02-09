@@ -1,0 +1,23 @@
+[package]
+name = "microdns-auth"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+microdns-core.workspace = true
+hickory-server.workspace = true
+hickory-proto.workspace = true
+tokio.workspace = true
+redb.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+hickory-client.workspace = true

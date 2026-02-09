@@ -1,0 +1,86 @@
+# MicroDNS - Leaf instance configuration example
+# Runs full DNS + DHCP services for a single network segment
+
+[instance]
+id = "vlan10-dns01"
+mode = "leaf"
+
+[coordinator]
+endpoint = "grpc://coordinator.microdns.svc:50051"
+heartbeat_interval_secs = 10
+report_interval_secs = 30
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:53"
+zones = ["vlan10.example.com", "10.0.10.in-addr.arpa"]
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:5353"
+cache_size = 10000
+
+[dns.recursor.forward_zones]
+"corp.local" = ["10.0.1.1:53"]
+
+[dns.loadbalancer]
+enabled = true
+check_interval_secs = 10
+default_probe = "ping"
+
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+
+[[dhcp.v4.pools]]
+range_start = "10.0.10.100"
+range_end = "10.0.10.200"
+subnet = "10.0.10.0/24"
+gateway = "10.0.10.1"
+dns = ["10.0.10.2"]
+domain = "vlan10.example.com"
+lease_time_secs = 3600
+
+[dhcp.v6]
+enabled = true
+interface = "eth0"
+
+[[dhcp.v6.pools]]
+prefix = "fd00:10::"
+prefix_len = 64
+dns = ["fd00:10::2"]
+domain = "vlan10.example.com"
+lease_time_secs = 3600
+
+[dhcp.slaac]
+enabled = true
+interface = "eth0"
+prefix = "fd00:10::"
+prefix_len = 64
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = "vlan10.example.com"
+reverse_zone_v4 = "10.0.10.in-addr.arpa"
+reverse_zone_v6 = "0.0.0.0.0.1.0.0.d.f.ip6.arpa"
+default_ttl = 300
+
+[messaging]
+backend = "kafka"
+brokers = ["redpanda.svc:9092"]
+topic_prefix = "microdns"
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[api.grpc]
+enabled = true
+listen = "0.0.0.0:50051"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"

@@ -1,0 +1,36 @@
+# MicroDNS - Coordinator instance configuration example
+# Aggregates status from leaf instances, provides global view
+
+[instance]
+id = "coordinator-01"
+mode = "coordinator"
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:53"
+zones = ["example.com"]
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:5353"
+cache_size = 50000
+
+[messaging]
+backend = "kafka"
+brokers = ["redpanda.svc:9092"]
+topic_prefix = "microdns"
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[api.grpc]
+enabled = true
+listen = "0.0.0.0:50051"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"

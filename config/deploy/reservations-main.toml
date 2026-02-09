@@ -1,0 +1,242 @@
+# DHCP reservations for main (192.168.1.x)
+# Auto-generated from router.gw.lo DHCP leases
+
+[[dhcp.v4.reservations]]
+mac = "96:14:82:D9:D6:76"
+ip = "192.168.1.201"
+hostname = "control0"
+
+[[dhcp.v4.reservations]]
+mac = "00:50:56:1F:27:27"
+ip = "192.168.1.202"
+hostname = "control1"
+
+[[dhcp.v4.reservations]]
+mac = "00:50:56:1F:28:28"
+ip = "192.168.1.203"
+hostname = "control2"
+
+[[dhcp.v4.reservations]]
+mac = "00:50:56:1F:30:30"
+ip = "192.168.1.204"
+hostname = "worker0"
+
+[[dhcp.v4.reservations]]
+mac = "00:50:56:1F:31:31"
+ip = "192.168.1.205"
+hostname = "worker1"
+
+[[dhcp.v4.reservations]]
+mac = "00:0C:29:D9:1C:AE"
+ip = "10.19.33.100"
+hostname = "prov"
+
+[[dhcp.v4.reservations]]
+mac = "02:D1:1E:FF:ED:15"
+ip = "192.168.1.127"
+hostname = "node"
+
+[[dhcp.v4.reservations]]
+mac = "02:82:91:DB:07:DF"
+ip = "192.168.1.210"
+hostname = "cp0"
+
+[[dhcp.v4.reservations]]
+mac = "02:0D:FD:A5:30:A5"
+ip = "192.168.1.211"
+hostname = "cp1"
+
+[[dhcp.v4.reservations]]
+mac = "02:F5:5B:52:CA:AE"
+ip = "192.168.1.212"
+hostname = "cp2"
+
+[[dhcp.v4.reservations]]
+mac = "02:1D:50:4E:18:57"
+ip = "192.168.1.213"
+hostname = "node0"
+
+[[dhcp.v4.reservations]]
+mac = "02:39:75:BA:78:04"
+ip = "192.168.1.214"
+hostname = "node1"
+
+[[dhcp.v4.reservations]]
+mac = "00:0C:29:43:E5:A5"
+ip = "192.168.1.218"
+hostname = "node3"
+
+[[dhcp.v4.reservations]]
+mac = "00:50:56:1F:32:32"
+ip = "192.168.1.206"
+hostname = "worker2"
+
+[[dhcp.v4.reservations]]
+mac = "BC:D0:74:5E:0A:AB"
+ip = "192.168.1.18"
+hostname = "gwest-mac"
+
+[[dhcp.v4.reservations]]
+mac = "08:55:31:DB:0F:E1"
+ip = "192.168.1.14"
+hostname = "cap01.gw.lo"
+
+[[dhcp.v4.reservations]]
+mac = "00:21:7E:8B:56:86"
+ip = "192.168.1.32"
+hostname = "lwip0"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:5E:A0:A0"
+ip = "192.168.1.67"
+hostname = "bigwhitebox"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:9E:0C:B2"
+ip = "192.168.1.40"
+hostname = "nvr.gw.lo"
+
+[[dhcp.v4.reservations]]
+mac = "A4:D7:3C:15:B9:E5"
+ip = "192.168.1.33"
+hostname = "EPSON15B9E5"
+
+[[dhcp.v4.reservations]]
+mac = "F4:DD:06:67:EB:86"
+ip = "192.168.1.30"
+hostname = "Samsung"
+
+[[dhcp.v4.reservations]]
+mac = "F0:F5:BD:52:43:48"
+ip = "192.168.1.76"
+hostname = "konnected-f0f5bd524348"
+
+[[dhcp.v4.reservations]]
+mac = "FC:B9:7E:C4:25:B6"
+ip = "192.168.1.78"
+hostname = "GEMODULE25B6"
+
+[[dhcp.v4.reservations]]
+mac = "30:83:98:B7:5F:46"
+ip = "192.168.1.79"
+hostname = "ESP-B75F46"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:A1:07:D8"
+ip = "192.168.1.87"
+hostname = "graylog"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:DE:0D:E2"
+ip = "192.168.1.55"
+hostname = "minio"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:1E:CD:53"
+ip = "192.168.1.165"
+hostname = "pbs"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:32:AB:5B"
+ip = "192.168.1.72"
+hostname = "standb"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:09:79:8B"
+ip = "192.168.1.92"
+hostname = "logs"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:B3:0A:AA"
+ip = "192.168.1.5"
+hostname = "boot"
+
+[[dhcp.v4.reservations]]
+mac = "4C:A3:8F:07:B3:86"
+ip = "192.168.1.106"
+hostname = "SPI-XI"
+
+[[dhcp.v4.reservations]]
+mac = "BC:24:11:6F:BF:F1"
+ip = "192.168.1.116"
+hostname = "vweb"
+
+[[dhcp.v4.reservations]]
+mac = "B4:3A:45:B8:95:9C"
+ip = "192.168.1.118"
+hostname = "konnected-b8959c"
+
+[[dhcp.v4.reservations]]
+mac = "58:8C:81:35:EA:A0"
+ip = "192.168.1.17"
+hostname = "ecoflow"
+
+[[dhcp.v4.reservations]]
+mac = "08:91:15:2A:B8:BE"
+ip = "192.168.1.23"
+hostname = "Blink"
+
+[[dhcp.v4.reservations]]
+mac = "44:42:01:E8:27:F0"
+ip = "192.168.1.31"
+hostname = "Blink"
+
+[[dhcp.v4.reservations]]
+mac = "80:6A:10:02:EA:33"
+ip = "192.168.1.9"
+hostname = "Ting-EA-33"
+
+[[dhcp.v4.reservations]]
+mac = "18:FD:74:13:56:60"
+ip = "192.168.1.4"
+hostname = "cap02.gw.lo"
+
+[[dhcp.v4.reservations]]
+mac = "F4:1E:57:EB:88:5E"
+ip = "192.168.1.88"
+hostname = "MikroTik"
+
+[[dhcp.v4.reservations]]
+mac = "00:E0:4C:E5:4B:A0"
+ip = "192.168.1.135"
+hostname = "gw17"
+
+[[dhcp.v4.reservations]]
+mac = "AC:91:9B:19:23:85"
+ip = "192.168.1.22"
+hostname = "adt_S40LR0_01"
+
+[[dhcp.v4.reservations]]
+mac = "D0:11:E5:BB:98:E6"
+ip = "192.168.1.49"
+hostname = "Glenns-Mac-mini"
+
+[[dhcp.v4.reservations]]
+mac = "54:EF:44:92:1D:D8"
+ip = "192.168.1.91"
+hostname = "Aqara-Hub-M200-1DD8"
+
+[[dhcp.v4.reservations]]
+mac = "56:62:CF:4D:B3:D4"
+ip = "192.168.1.99"
+hostname = "MacBookPro"
+
+[[dhcp.v4.reservations]]
+mac = "80:96:98:3C:10:12"
+ip = "192.168.1.95"
+hostname = "Gsw14"
+
+[[dhcp.v4.reservations]]
+mac = "14:1B:A0:CF:DD:01"
+ip = "192.168.1.65"
+hostname = "trangs-iPhone"
+
+[[dhcp.v4.reservations]]
+mac = "14:35:B7:D2:AC:F0"
+ip = "192.168.1.70"
+hostname = "Trang-Cutest"
+
+[[dhcp.v4.reservations]]
+mac = "44:9E:8B:1A:9F:C2"
+ip = "192.168.1.97"
+hostname = "iPad"

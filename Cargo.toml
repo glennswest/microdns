@@ -1,0 +1,108 @@
+[workspace]
+members = [
+    "crates/microdns-core",
+    "crates/microdns-auth",
+    "crates/microdns-api",
+    "crates/microdns-recursor",
+    "crates/microdns-lb",
+    "crates/microdns-dhcp",
+    "crates/microdns-msg",
+    "crates/microdns-federation",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# DNS
+hickory-server = "0.24"
+hickory-resolver = "0.24"
+hickory-proto = "0.24"
+hickory-client = "0.24"
+
+# Database
+redb = "2"
+
+# Web / API
+axum = { version = "0.8", features = ["ws"] }
+tonic = "0.12"
+prost = "0.13"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Messaging
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+
+# Networking
+socket2 = { version = "0.5", features = ["all"] }
+pnet = "0.35"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging / Metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+
+# Concurrency
+dashmap = "6"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async
+async-trait = "0.1"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+ipnet = { version = "2", features = ["serde"] }
+bytes = "1"
+
+# Internal crates
+microdns-core = { path = "crates/microdns-core" }
+microdns-auth = { path = "crates/microdns-auth" }
+microdns-api = { path = "crates/microdns-api" }
+microdns-recursor = { path = "crates/microdns-recursor" }
+microdns-lb = { path = "crates/microdns-lb" }
+microdns-dhcp = { path = "crates/microdns-dhcp" }
+microdns-msg = { path = "crates/microdns-msg" }
+microdns-federation = { path = "crates/microdns-federation" }
+
+[package]
+name = "microdns"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "microdns"
+path = "src/main.rs"
+
+[dependencies]
+microdns-core.workspace = true
+microdns-auth.workspace = true
+microdns-recursor.workspace = true
+microdns-lb.workspace = true
+microdns-api.workspace = true
+microdns-dhcp.workspace = true
+microdns-msg.workspace = true
+microdns-federation.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

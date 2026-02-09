@@ -1,0 +1,22 @@
+# MicroDNS - Standalone configuration example
+
+[instance]
+id = "standalone-01"
+mode = "standalone"
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:15353"
+zones = ["example.com"]
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+# api_key = "change-me-in-production"
+
+[database]
+path = "./data/microdns.redb"
+
+[logging]
+level = "info"
+format = "text"

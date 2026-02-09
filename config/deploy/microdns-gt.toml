@@ -1,0 +1,73 @@
+# MicroDNS gt Instance (Container Management Network)
+# IP: 192.168.200.1 (bridge-gt)
+# Serves: gt.lo, reverse 200.168.192; DHCP for 192.168.200.x
+
+[instance]
+id = "microdns-gt"
+mode = "standalone"
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:53"
+cache_size = 10000
+
+[dns.recursor.forward_zones]
+"gw.lo" = ["192.168.1.199:53"]
+"g10.lo" = ["192.168.1.199:53"]
+"g11.lo" = ["192.168.1.199:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.199:53"]
+
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+
+[[dhcp.v4.pools]]
+range_start = "192.168.200.10"
+range_end = "192.168.200.250"
+subnet = "192.168.200.0/24"
+gateway = "192.168.200.1"
+dns = ["192.168.200.199"]
+domain = "gt.lo"
+lease_time_secs = 3600
+
+# Reservations for containers moving to bridge-gt
+[[dhcp.v4.reservations]]
+mac = "30:E4:B4:AE:B9:A6"
+ip = "192.168.200.10"
+hostname = "pxe"
+
+[[dhcp.v4.reservations]]
+mac = "32:2E:8B:81:6D:3B"
+ip = "192.168.200.11"
+hostname = "fastregistry"
+
+[[dhcp.v4.reservations]]
+mac = "7A:FF:EA:2B:D3:8A"
+ip = "192.168.200.12"
+hostname = "agentmonitor"
+
+[[dhcp.v4.reservations]]
+mac = "1E:19:C9:D5:75:7A"
+ip = "192.168.200.13"
+hostname = "console"
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = "gt.lo"
+reverse_zone_v4 = "200.168.192.in-addr.arpa"
+reverse_zone_v6 = ""
+default_ttl = 300
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"
+
+[messaging]
+backend = "noop"

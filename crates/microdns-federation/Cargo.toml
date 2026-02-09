@@ -1,0 +1,19 @@
+[package]
+name = "microdns-federation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+microdns-core.workspace = true
+microdns-msg.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

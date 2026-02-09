@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microdns-coordinator
+  namespace: microdns
+  labels:
+    app.kubernetes.io/name: microdns
+    app.kubernetes.io/component: coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: microdns
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: microdns
+        app.kubernetes.io/component: coordinator
+    spec:
+      serviceAccountName: microdns
+      containers:
+        - name: microdns
+          image: microdns:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/microdns/microdns.toml
+          ports:
+            - name: dns
+              containerPort: 53
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/microdns
+              readOnly: true
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: microdns-coordinator-config
+        - name: data
+          emptyDir: {}

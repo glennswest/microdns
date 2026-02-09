@@ -1,0 +1,99 @@
+# MicroDNS g11 Instance
+# IP: 192.168.11.201 (bridge-boot)
+# Serves: g11.lo, reverse 11.168.192; DHCP for 192.168.11.x; PXE boot
+
+[instance]
+id = "microdns-g11"
+mode = "standalone"
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:53"
+cache_size = 10000
+
+[dns.recursor.forward_zones]
+"gw.lo" = ["192.168.1.199:53"]
+"apps.gw.lo" = ["192.168.1.199:53"]
+"pv.lo" = ["192.168.1.199:53"]
+"bm.lo" = ["192.168.1.199:53"]
+"ipmi.lo" = ["192.168.1.199:53"]
+"g10.lo" = ["192.168.1.199:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.199:53"]
+"10.168.192.in-addr.arpa" = ["192.168.1.199:53"]
+
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+
+[[dhcp.v4.pools]]
+range_start = "192.168.11.10"
+range_end = "192.168.11.200"
+subnet = "192.168.11.0/24"
+gateway = "192.168.11.1"
+dns = ["192.168.1.199"]
+domain = "g11.lo"
+lease_time_secs = 600
+next_server = "192.168.1.116"
+boot_file = "pxelinux.0"
+
+# Static reservations (8 entries from rose1 dhcp11 - IPMI + switch)
+[[dhcp.v4.reservations]]
+mac = "04:F4:1C:42:E1:5A"
+ip = "192.168.11.254"
+hostname = "switch11"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6B:90"
+ip = "192.168.11.10"
+hostname = "ipmi1"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6B:2A"
+ip = "192.168.11.11"
+hostname = "server2"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6B:37"
+ip = "192.168.11.12"
+hostname = "server3-ipmi"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6B:C0"
+ip = "192.168.11.13"
+hostname = "server4-ipmi"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6B:1E"
+ip = "192.168.11.14"
+hostname = "server5-ipmi"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6C:A6"
+ip = "192.168.11.15"
+hostname = "server6-ipmi"
+
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:02:6B:2E"
+ip = "192.168.11.17"
+hostname = "server8-ipmi"
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = "g11.lo"
+reverse_zone_v4 = "11.168.192.in-addr.arpa"
+reverse_zone_v6 = ""
+default_ttl = 300
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"
+
+[messaging]
+backend = "noop"

@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: microdns
+  namespace: microdns
+  labels:
+    app.kubernetes.io/name: microdns
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: microdns
+  labels:
+    app.kubernetes.io/name: microdns
+rules:
+  # Allow reading node information for instance identification
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Allow reading pods for service discovery
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Allow reading endpoints for DNS-based service discovery
+  - apiGroups: [""]
+    resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: microdns
+  labels:
+    app.kubernetes.io/name: microdns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: microdns
+subjects:
+  - kind: ServiceAccount
+    name: microdns
+    namespace: microdns

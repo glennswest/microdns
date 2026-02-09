@@ -1,0 +1,127 @@
+# MicroDNS g10 Instance
+# IP: 192.168.10.201 (bridge)
+# Serves: g10.lo, s1.lo, reverse 10.168.192; DHCP for 192.168.10.x; PXE boot
+
+[instance]
+id = "microdns-g10"
+mode = "standalone"
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:53"
+cache_size = 10000
+
+[dns.recursor.forward_zones]
+"gw.lo" = ["192.168.1.199:53"]
+"apps.gw.lo" = ["192.168.1.199:53"]
+"pv.lo" = ["192.168.1.199:53"]
+"bm.lo" = ["192.168.1.199:53"]
+"ipmi.lo" = ["192.168.1.199:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.199:53"]
+
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+
+[[dhcp.v4.pools]]
+range_start = "192.168.10.10"
+range_end = "192.168.10.210"
+subnet = "192.168.10.0/24"
+gateway = "192.168.10.1"
+dns = ["192.168.1.199"]
+domain = "g10.lo"
+lease_time_secs = 600
+next_server = "192.168.200.10"
+boot_file = "undionly.kpxe"
+
+# Static reservations (14 entries from rose1 dhcp10)
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8A:A7:9C"
+ip = "192.168.10.10"
+hostname = "server1"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:B7:E0"
+ip = "192.168.10.20"
+hostname = "server1b"
+
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8B:11:5D"
+ip = "192.168.10.11"
+hostname = "server2"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:BC:C0"
+ip = "192.168.10.21"
+hostname = "server2b"
+
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8A:A4:5C"
+ip = "192.168.10.12"
+hostname = "server3-nica"
+
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8A:9B:E2"
+ip = "192.168.10.13"
+hostname = "server4"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:5F:A0"
+ip = "192.168.10.23"
+hostname = "server4b"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:86:F0"
+ip = "192.168.10.22"
+hostname = "server3b"
+
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8A:A3:1A"
+ip = "192.168.10.14"
+hostname = "server5"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:6F:F0"
+ip = "192.168.10.24"
+hostname = "server5b"
+
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8D:90:13"
+ip = "192.168.10.15"
+hostname = "server6"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:B7:D0"
+ip = "192.168.10.25"
+hostname = "server6b"
+
+[[dhcp.v4.reservations]]
+mac = "AC:1F:6B:8A:A3:96"
+ip = "192.168.10.17"
+hostname = "server8"
+
+[[dhcp.v4.reservations]]
+mac = "F4:52:14:84:AE:30"
+ip = "192.168.10.27"
+hostname = "server8b"
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = "g10.lo"
+reverse_zone_v4 = "10.168.192.in-addr.arpa"
+reverse_zone_v6 = ""
+default_ttl = 300
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"
+
+[messaging]
+backend = "noop"
