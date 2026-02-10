@@ -496,6 +496,52 @@ kubectl apply -f k8s/service.yaml
 - **Coordinator** runs as a single-replica Deployment
 - Federation uses Kafka for heartbeat and config sync between instances
 
+## Security
+
+MicroDNS includes defense-in-depth security hardening across all network-facing services.
+
+### Authentication
+
+- **API key enforcement** — Set `api_key` in config; all REST, gRPC, and WebSocket endpoints require `X-API-Key` header. `/health` and `/dashboard` are exempt.
+- **No default credentials** — API key is optional; when unset, endpoints are open (suitable for trusted networks).
+
+### Input Validation
+
+- **DNS name validation** — Zone and record names are validated against RFC 1035 (max 253 chars, labels max 63 chars, alphanumeric + hyphens only) on all REST and gRPC create/update endpoints.
+- **Request body limits** — REST: 1 MB max body size. gRPC: 1 MB max message size.
+- **gRPC data_json limit** — Record data payloads capped at 10 KB.
+- **Federation payload limits** — Zone sync and config push messages capped at 10 MB.
+
+### Rate Limiting & Resource Protection
+
+| Resource | Limit | Behavior when exceeded |
+|----------|-------|----------------------|
+| TCP connections (auth DNS) | 1,000 concurrent | New connections rejected |
+| TCP connections (recursor) | 1,000 concurrent | New connections rejected |
+| UDP query tasks (recursor) | 10,000 concurrent | Queries dropped |
+| WebSocket connections | 100 concurrent | Returns 503 |
+| TCP connection timeout | 30 seconds | Connection terminated |
+| AXFR transfer records | 100,000 max | Transfer aborted |
+| AXFR transfer size | 100 MB max | Transfer aborted |
+| List endpoint pagination | Default 100, max 1,000 | Use `?offset=N&limit=N` |
+| WebSocket message size | 2 MB max | Oversized messages skipped |
+
+### Error Handling
+
+- **Sanitized responses** — Internal errors return generic "internal server error" to clients. Full error details are logged server-side only.
+- **No unsafe code** — Zero `unsafe` blocks across the entire codebase.
+- **No panics on untrusted input** — All network input parsing uses proper error handling with no `unwrap()` on external data.
+
+### Lease Management
+
+- **Automatic cleanup** — Background task purges expired DHCP leases every 5 minutes (24-hour retention after expiry) to prevent unbounded database growth.
+
+### DNS Protocol Safety
+
+- **Bounded allocations** — UDP buffers are fixed-size (4,096 bytes DNS, 1,500 bytes DHCP).
+- **Cache limits** — Recursive resolver cache enforces configurable `max_size` with TTL-based eviction.
+- **DHCP packet validation** — Comprehensive bounds checking on all DHCPv4/v6 option parsing.
+
 ## Crate Structure
 
 ```
