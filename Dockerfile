@@ -1,5 +1,6 @@
 # Multi-stage build for MicroDNS
 # Produces a minimal scratch image with a static binary
+# Supports amd64 and arm64 architectures
 
 # Stage 1: Build
 FROM rust:1.88-bookworm AS builder
@@ -10,8 +11,14 @@ RUN apt-get update && apt-get install -y \
     musl-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Add musl target
-RUN rustup target add aarch64-unknown-linux-musl
+# Detect architecture and add correct musl target
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+      amd64) echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
+      arm64) echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
+      *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac && \
+    rustup target add $(cat /tmp/rust-target)
 
 WORKDIR /build
 
@@ -37,7 +44,7 @@ COPY crates/microdns-api/build.rs crates/microdns-api/
 COPY proto/ proto/
 
 # Build dependencies only (cached layer)
-RUN cargo build --release --target aarch64-unknown-linux-musl 2>/dev/null || true
+RUN cargo build --release --target $(cat /tmp/rust-target) 2>/dev/null || true
 
 # Copy actual source code
 COPY . .
@@ -47,13 +54,14 @@ RUN find . -name "*.rs" -exec touch {} +
 
 # Build release binary
 ENV RUSTFLAGS="-C target-feature=+crt-static"
-RUN cargo build --release --target aarch64-unknown-linux-musl
+RUN cargo build --release --target $(cat /tmp/rust-target) && \
+    cp /build/target/$(cat /tmp/rust-target)/release/microdns /microdns-bin
 
 # Stage 2: Runtime (scratch)
 FROM scratch
 
 # Copy the static binary
-COPY --from=builder /build/target/aarch64-unknown-linux-musl/release/microdns /microdns
+COPY --from=builder /microdns-bin /microdns
 
 # Copy default config
 COPY config/microdns.toml /etc/microdns/microdns.toml

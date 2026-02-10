@@ -1,0 +1,27 @@
+# MicroDNS - Fedora CoreOS standalone configuration
+
+[instance]
+id = "microdns-fcos"
+mode = "standalone"
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:53"
+zones = ["example.com"]
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:5353"
+cache_size = 10000
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+# api_key = "change-me-in-production"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"

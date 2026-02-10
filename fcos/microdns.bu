@@ -1,0 +1,42 @@
+variant: fcos
+version: "1.5.0"
+
+storage:
+  directories:
+    - path: /var/lib/microdns
+      mode: 0755
+
+  files:
+    - path: /etc/microdns/microdns.toml
+      mode: 0644
+      contents:
+        local: microdns.toml
+
+systemd:
+  units:
+    - name: microdns.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=MicroDNS
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=exec
+        ExecStartPre=-/usr/bin/podman pull ghcr.io/glennswest/microdns:latest
+        ExecStartPre=-/usr/bin/podman rm -f microdns
+        ExecStart=/usr/bin/podman run --rm --name microdns \
+          --net=host \
+          --cap-add=NET_BIND_SERVICE \
+          --cap-add=NET_RAW \
+          -v /etc/microdns:/etc/microdns:ro,Z \
+          -v /var/lib/microdns:/data:Z \
+          ghcr.io/glennswest/microdns:latest \
+          --config /etc/microdns/microdns.toml
+        ExecStop=/usr/bin/podman stop -t 10 microdns
+        Restart=always
+        RestartSec=10
+
+        [Install]
+        WantedBy=multi-user.target
