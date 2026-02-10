@@ -1,16 +1,29 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use microdns_core::types::LeaseState;
 use redb::{ReadableTable, TableDefinition};
 use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::AppState;
+use crate::{AppState, MAX_WS_CONNECTIONS};
 
 const LEASES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("leases");
 
-pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+/// Maximum serialized message size (2 MB)
+const MAX_WS_MESSAGE_SIZE: usize = 2 * 1024 * 1024;
+
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
+    let current = state.ws_connections.load(Ordering::Relaxed);
+    if current >= MAX_WS_CONNECTIONS {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    state.ws_connections.fetch_add(1, Ordering::Relaxed);
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -53,7 +66,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         let update = gather_dashboard_data(&state).await;
 
         let json = match serde_json::to_string(&update) {
-            Ok(j) => j,
+            Ok(j) if j.len() <= MAX_WS_MESSAGE_SIZE => j,
+            Ok(_) => continue, // skip oversized messages
             Err(_) => continue,
         };
 
@@ -61,6 +75,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             break;
         }
     }
+
+    state.ws_connections.fetch_sub(1, Ordering::Relaxed);
 }
 
 async fn gather_dashboard_data(state: &AppState) -> DashboardUpdate {

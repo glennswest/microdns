@@ -1,5 +1,6 @@
+use crate::security::{internal_error, validate_dns_name, Pagination};
 use crate::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -65,18 +66,19 @@ fn default_ttl() -> u32 {
 
 async fn list_zones(
     State(state): State<AppState>,
+    Query(page): Query<Pagination>,
 ) -> Result<Json<Vec<ZoneResponse>>, (StatusCode, String)> {
     let zones = state
         .db
         .get_zone_record_counts()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     let response: Vec<ZoneResponse> = zones
         .into_iter()
         .map(|(zone, count)| ZoneResponse::from_zone(zone, Some(count)))
         .collect();
 
-    Ok(Json(response))
+    Ok(Json(page.apply(response)))
 }
 
 async fn create_zone(
@@ -84,6 +86,8 @@ async fn create_zone(
     Json(req): Json<CreateZoneRequest>,
 ) -> Result<(StatusCode, Json<ZoneResponse>), (StatusCode, String)> {
     let name = req.name.trim_end_matches('.').to_string();
+
+    validate_dns_name(&name).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     let soa = match req.soa {
         Some(s) => SoaData {
@@ -133,13 +137,13 @@ async fn get_zone(
     let zone = state
         .db
         .get_zone(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_error)?
         .ok_or((StatusCode::NOT_FOUND, "zone not found".to_string()))?;
 
     let records = state
         .db
         .list_records(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     Ok(Json(ZoneResponse::from_zone(zone, Some(records.len()))))
 }
@@ -181,7 +185,7 @@ async fn transfer_zone(
     let result = zt
         .axfr_pull(&req.zone, primary)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("AXFR failed: {e}")))?;
+        .map_err(internal_error)?;
 
     Ok(Json(TransferResponse {
         zone_name: result.zone_name,

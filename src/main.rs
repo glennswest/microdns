@@ -249,6 +249,31 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Start lease expiry cleanup task
+    {
+        let db_cleanup = db.clone();
+        let rx = shutdown_rx.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut rx = rx;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let mgr = microdns_dhcp::lease::LeaseManager::new(db_cleanup.clone());
+                        match mgr.purge_expired_leases(chrono::Duration::hours(24)) {
+                            Ok(0) => {}
+                            Ok(n) => info!("purged {n} expired leases"),
+                            Err(e) => error!("lease cleanup error: {e}"),
+                        }
+                    }
+                    _ = rx.changed() => {
+                        if *rx.borrow() { break; }
+                    }
+                }
+            }
+        }));
+    }
+
     // Start REST API
     if let Some(ref rest_config) = config.api.rest {
         if rest_config.enabled {

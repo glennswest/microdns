@@ -1,5 +1,6 @@
+use crate::security::{internal_error, Pagination};
 use crate::AppState;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -44,12 +45,13 @@ impl LeaseResponse {
 
 async fn list_leases(
     State(state): State<AppState>,
+    Query(page): Query<Pagination>,
 ) -> Result<Json<Vec<LeaseResponse>>, (StatusCode, String)> {
     let read_txn = state
         .db
         .raw()
         .begin_read()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     let leases = match read_txn.open_table(LEASES_TABLE) {
         Ok(table) => {
@@ -62,7 +64,7 @@ async fn list_leases(
                 let entry =
                     entry.map_err(|e: redb::StorageError| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
                 let lease: Lease = serde_json::from_str(entry.1.value())
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                    .map_err(internal_error)?;
                 if lease.state == LeaseState::Active && lease.lease_end > now {
                     result.push(LeaseResponse::from_lease(lease));
                 }
@@ -72,5 +74,5 @@ async fn list_leases(
         Err(_) => Vec::new(), // Table doesn't exist yet = no leases
     };
 
-    Ok(Json(leases))
+    Ok(Json(page.apply(leases)))
 }

@@ -1,17 +1,26 @@
 pub mod dashboard;
 pub mod grpc;
 pub mod rest;
+pub mod security;
 pub mod ws;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::Router;
 use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
 use microdns_federation::heartbeat::HeartbeatTracker;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
+
+/// Maximum request body size (1 MB)
+const MAX_BODY_SIZE: usize = 1024 * 1024;
+
+/// Maximum concurrent WebSocket connections
+const MAX_WS_CONNECTIONS: usize = 100;
 
 pub struct ApiServer {
     listen_addr: SocketAddr,
@@ -31,6 +40,7 @@ pub struct AppState {
     pub heartbeat_tracker: Option<Arc<HeartbeatTracker>>,
     pub ipam_pools: Vec<IpamPool>,
     pub peers: Vec<PeerConfig>,
+    pub ws_connections: Arc<AtomicUsize>,
 }
 
 impl ApiServer {
@@ -74,12 +84,18 @@ impl ApiServer {
             heartbeat_tracker: self.heartbeat_tracker,
             ipam_pools: self.ipam_pools,
             peers: self.peers,
+            ws_connections: Arc::new(AtomicUsize::new(0)),
         };
 
         let app = Router::new()
             .nest("/api/v1", rest::router())
             .route("/dashboard", get(dashboard::dashboard_page))
             .route("/ws", get(ws::ws_handler))
+            .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                security::api_key_auth,
+            ))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.listen_addr).await?;
@@ -147,11 +163,11 @@ impl GrpcServer {
 
         let mut shutdown = shutdown;
         tonic::transport::Server::builder()
-            .add_service(ZoneServiceServer::from_arc(svc.clone()))
-            .add_service(RecordServiceServer::from_arc(svc.clone()))
-            .add_service(LeaseServiceServer::from_arc(svc.clone()))
-            .add_service(ClusterServiceServer::from_arc(svc.clone()))
-            .add_service(HealthServiceServer::from_arc(svc))
+            .add_service(ZoneServiceServer::from_arc(svc.clone()).max_decoding_message_size(1024 * 1024))
+            .add_service(RecordServiceServer::from_arc(svc.clone()).max_decoding_message_size(1024 * 1024))
+            .add_service(LeaseServiceServer::from_arc(svc.clone()).max_decoding_message_size(1024 * 1024))
+            .add_service(ClusterServiceServer::from_arc(svc.clone()).max_decoding_message_size(1024 * 1024))
+            .add_service(HealthServiceServer::from_arc(svc).max_decoding_message_size(1024 * 1024))
             .serve_with_shutdown(self.listen_addr, async move {
                 let _ = shutdown.changed().await;
             })

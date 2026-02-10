@@ -1124,6 +1124,7 @@ name = "microdns"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "microdns-api",
  "microdns-auth",

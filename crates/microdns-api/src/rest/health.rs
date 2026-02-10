@@ -1,3 +1,4 @@
+use crate::security::internal_error;
 use crate::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -22,7 +23,7 @@ async fn health_check(
     let zones = state
         .db
         .list_zones()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     Ok(Json(HealthResponse {
         status: "ok".to_string(),

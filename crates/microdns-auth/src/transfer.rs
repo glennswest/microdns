@@ -12,6 +12,12 @@ use tokio::net::TcpStream;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+/// Maximum number of records accepted via AXFR
+const MAX_AXFR_RECORDS: usize = 100_000;
+
+/// Maximum total bytes read during AXFR
+const MAX_AXFR_BYTES: usize = 100 * 1024 * 1024;
+
 pub struct ZoneTransfer {
     db: Db,
 }
@@ -109,6 +115,7 @@ impl ZoneTransfer {
         let mut parsed_records: Vec<(String, microdns_core::types::RecordData, u32)> = Vec::new();
         let mut soa_data: Option<SoaData> = None;
         let mut default_ttl: u32 = 300;
+        let mut total_bytes: usize = 0;
 
         loop {
             // Read 2-byte length
@@ -124,6 +131,13 @@ impl ZoneTransfer {
 
             if msg_len == 0 {
                 break;
+            }
+
+            total_bytes += msg_len;
+            if total_bytes > MAX_AXFR_BYTES {
+                return Err(anyhow::anyhow!(
+                    "AXFR exceeded max size ({MAX_AXFR_BYTES} bytes)"
+                ));
             }
 
             let mut buf = vec![0u8; msg_len];
@@ -162,6 +176,11 @@ impl ZoneTransfer {
                         }
                     }
                     rdata => {
+                        if parsed_records.len() >= MAX_AXFR_RECORDS {
+                            return Err(anyhow::anyhow!(
+                                "AXFR exceeded max record count ({MAX_AXFR_RECORDS})"
+                            ));
+                        }
                         if let Some((rel_name, data)) =
                             from_rdata(rdata, answer.name(), zone_name)
                         {

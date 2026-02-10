@@ -1,4 +1,5 @@
 use super::proto;
+use crate::security::validate_dns_name;
 use microdns_core::db::Db;
 use microdns_core::types::{Lease, LeaseState, Record, RecordData, SoaData, Zone};
 use microdns_federation::heartbeat::HeartbeatTracker;
@@ -6,6 +7,9 @@ use redb::{ReadableTable, TableDefinition};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
+
+/// Maximum size for data_json field (10 KB)
+const MAX_DATA_JSON_SIZE: usize = 10 * 1024;
 
 const LEASES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("leases");
 
@@ -71,7 +75,10 @@ impl proto::zone_service_server::ZoneService for MicroDnsGrpcService {
         let zones = self
             .db
             .list_zones()
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(proto::ListZonesResponse {
             zones: zones.iter().map(zone_to_proto).collect(),
@@ -91,7 +98,10 @@ impl proto::zone_service_server::ZoneService for MicroDnsGrpcService {
         let zone = self
             .db
             .get_zone(&zone_id)
-            .map_err(|e| Status::internal(e.to_string()))?
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?
             .ok_or_else(|| Status::not_found("zone not found"))?;
 
         Ok(Response::new(zone_to_proto(&zone)))
@@ -102,6 +112,10 @@ impl proto::zone_service_server::ZoneService for MicroDnsGrpcService {
         request: Request<proto::CreateZoneRequest>,
     ) -> Result<Response<proto::Zone>, Status> {
         let req = request.into_inner();
+
+        validate_dns_name(&req.name)
+            .map_err(|e| Status::invalid_argument(format!("invalid zone name: {e}")))?;
+
         let now = chrono::Utc::now();
 
         let zone = Zone {
@@ -127,7 +141,10 @@ impl proto::zone_service_server::ZoneService for MicroDnsGrpcService {
 
         self.db
             .create_zone(&zone.name, &zone)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(zone_to_proto(&zone)))
     }
@@ -144,7 +161,10 @@ impl proto::zone_service_server::ZoneService for MicroDnsGrpcService {
 
         self.db
             .delete_zone(&zone_id)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(proto::DeleteZoneResponse { success: true }))
     }
@@ -165,7 +185,10 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
         let records = self
             .db
             .list_records(&zone_id)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(proto::ListRecordsResponse {
             records: records.iter().map(record_to_proto).collect(),
@@ -181,6 +204,13 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
             .zone_id
             .parse()
             .map_err(|_| Status::invalid_argument("invalid zone_id"))?;
+
+        validate_dns_name(&req.name)
+            .map_err(|e| Status::invalid_argument(format!("invalid name: {e}")))?;
+
+        if req.data_json.len() > MAX_DATA_JSON_SIZE {
+            return Err(Status::invalid_argument("data_json exceeds 10KB limit"));
+        }
 
         let data: RecordData = serde_json::from_str(&req.data_json)
             .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
@@ -200,7 +230,10 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
 
         self.db
             .create_record(&record)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(record_to_proto(&record)))
     }
@@ -218,16 +251,24 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
         let mut record = self
             .db
             .get_record(&record_id)
-            .map_err(|e| Status::internal(e.to_string()))?
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?
             .ok_or_else(|| Status::not_found("record not found"))?;
 
         if !req.name.is_empty() {
+            validate_dns_name(&req.name)
+                .map_err(|e| Status::invalid_argument(format!("invalid name: {e}")))?;
             record.name = req.name;
         }
         if req.ttl > 0 {
             record.ttl = req.ttl;
         }
         if !req.data_json.is_empty() {
+            if req.data_json.len() > MAX_DATA_JSON_SIZE {
+                return Err(Status::invalid_argument("data_json exceeds 10KB limit"));
+            }
             record.data = serde_json::from_str(&req.data_json)
                 .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
         }
@@ -236,7 +277,10 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
 
         self.db
             .update_record(&record)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(record_to_proto(&record)))
     }
@@ -253,7 +297,10 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
 
         self.db
             .delete_record(&record_id)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         Ok(Response::new(proto::DeleteRecordResponse { success: true }))
     }
@@ -269,7 +316,10 @@ impl proto::lease_service_server::LeaseService for MicroDnsGrpcService {
             .db
             .raw()
             .begin_read()
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         let leases = match read_txn.open_table(LEASES_TABLE) {
             Ok(table) => {
@@ -277,11 +327,20 @@ impl proto::lease_service_server::LeaseService for MicroDnsGrpcService {
                 let mut result = Vec::new();
                 let iter = table
                     .iter()
-                    .map_err(|e| Status::internal(e.to_string()))?;
+                    .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
                 for entry in iter {
-                    let entry = entry.map_err(|e| Status::internal(e.to_string()))?;
+                    let entry = entry.map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
                     let lease: Lease = serde_json::from_str(entry.1.value())
-                        .map_err(|e| Status::internal(e.to_string()))?;
+                        .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
                     if lease.state == LeaseState::Active && lease.lease_end > now {
                         result.push(proto::Lease {
                             id: lease.id.to_string(),
@@ -377,14 +436,20 @@ impl proto::health_service_server::HealthService for MicroDnsGrpcService {
         let zones = self
             .db
             .list_zones()
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
         let mut records = Vec::new();
         for zone in &zones {
             let zone_records = self
                 .db
                 .list_records(&zone.id)
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(|e| {
+                tracing::error!("internal error: {e}");
+                Status::internal("internal server error")
+            })?;
 
             for record in &zone_records {
                 if record.health_check.is_some() {

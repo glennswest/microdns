@@ -9,10 +9,20 @@ use microdns_core::db::Db;
 use resolver::Resolver;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 use tracing::{debug, error, info, warn};
+
+/// Maximum concurrent TCP connections
+const MAX_TCP_CONNECTIONS: usize = 1000;
+
+/// Maximum concurrent UDP query tasks
+const MAX_UDP_QUERIES: usize = 10_000;
+
+/// Timeout for TCP connection handling
+const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct RecursorServer {
     listen_addr: SocketAddr,
@@ -48,19 +58,34 @@ impl RecursorServer {
 
         let resolver_tcp = self.resolver.clone();
 
-        // TCP accept loop
+        // TCP accept loop with connection limit
+        let tcp_semaphore = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
         let tcp_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     result = tcp_listener.accept() => {
                         match result {
                             Ok((stream, src)) => {
+                                let permit = match tcp_semaphore.clone().try_acquire_owned() {
+                                    Ok(p) => p,
+                                    Err(_) => {
+                                        warn!("recursor TCP connection limit reached, rejecting {src}");
+                                        continue;
+                                    }
+                                };
                                 debug!("recursor TCP connection from {src}");
                                 let resolver = resolver_tcp.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_tcp_query(stream, &resolver).await {
-                                        warn!("recursor TCP handler error from {src}: {e}");
+                                    let result = tokio::time::timeout(
+                                        TCP_TIMEOUT,
+                                        handle_tcp_query(stream, &resolver),
+                                    ).await;
+                                    match result {
+                                        Ok(Err(e)) => warn!("recursor TCP handler error from {src}: {e}"),
+                                        Err(_) => warn!("recursor TCP handler timeout from {src}"),
+                                        _ => {}
                                     }
+                                    drop(permit);
                                 });
                             }
                             Err(e) => {
@@ -77,7 +102,8 @@ impl RecursorServer {
             }
         });
 
-        // UDP recv loop
+        // UDP recv loop with concurrency limit
+        let udp_semaphore = Arc::new(Semaphore::new(MAX_UDP_QUERIES));
         loop {
             tokio::select! {
                 result = socket.recv_from(&mut buf) => {
@@ -85,6 +111,14 @@ impl RecursorServer {
                     let data = buf[..len].to_vec();
                     let resolver = self.resolver.clone();
                     let socket = socket.clone();
+
+                    let permit = match udp_semaphore.clone().try_acquire_owned() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            warn!("UDP query limit reached, dropping query from {src}");
+                            continue;
+                        }
+                    };
 
                     // Spawn a task per query for concurrency
                     tokio::spawn(async move {
@@ -98,6 +132,7 @@ impl RecursorServer {
                                 warn!("failed to resolve query from {src}: {e}");
                             }
                         }
+                        drop(permit);
                     });
                 }
                 _ = shutdown_udp.changed() => {

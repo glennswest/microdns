@@ -1,5 +1,6 @@
+use crate::security::{internal_error, Pagination};
 use crate::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -58,7 +59,7 @@ async fn list_pools(
     let allocations = state
         .db
         .list_ipam_allocations()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     let pools = state
         .ipam_pools
@@ -86,11 +87,12 @@ async fn list_pools(
 
 async fn list_allocations(
     State(state): State<AppState>,
+    Query(page): Query<Pagination>,
 ) -> Result<Json<Vec<AllocationResponse>>, (StatusCode, String)> {
     let allocations = state
         .db
         .list_ipam_allocations()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     let result = allocations
         .into_iter()
@@ -105,7 +107,7 @@ async fn list_allocations(
         })
         .collect();
 
-    Ok(Json(result))
+    Ok(Json(page.apply(result)))
 }
 
 async fn allocate(
@@ -136,7 +138,7 @@ async fn allocate(
     let allocations = state
         .db
         .list_ipam_allocations()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     // Check if container already has an allocation in this pool
     if let Some(existing) = allocations
@@ -196,7 +198,7 @@ async fn allocate(
     state
         .db
         .create_ipam_allocation(&alloc)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     Ok((
         StatusCode::CREATED,
@@ -219,7 +221,7 @@ async fn deallocate(
     state
         .db
         .delete_ipam_allocation(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_error)?;
 
     Ok(StatusCode::NO_CONTENT)
 }

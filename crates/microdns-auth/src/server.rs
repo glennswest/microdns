@@ -7,9 +7,17 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use microdns_core::db::Db;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
+
+/// Maximum concurrent TCP connections
+const MAX_TCP_CONNECTIONS: usize = 1000;
+
+/// Timeout for TCP connection handling
+const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct AuthServer {
     listen_addr: SocketAddr,
@@ -41,20 +49,35 @@ impl AuthServer {
         let catalog_tcp = self.catalog.clone();
         let db_tcp = self.db.clone();
 
-        // TCP accept loop
+        // TCP accept loop with connection limit
+        let tcp_semaphore = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
         let tcp_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     result = tcp_listener.accept() => {
                         match result {
                             Ok((stream, src)) => {
+                                let permit = match tcp_semaphore.clone().try_acquire_owned() {
+                                    Ok(p) => p,
+                                    Err(_) => {
+                                        warn!("TCP connection limit reached, rejecting {src}");
+                                        continue;
+                                    }
+                                };
                                 debug!("TCP connection from {src}");
                                 let catalog = catalog_tcp.clone();
                                 let db = db_tcp.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_tcp_connection(stream, &catalog, &db).await {
-                                        warn!("TCP handler error from {src}: {e}");
+                                    let result = tokio::time::timeout(
+                                        TCP_TIMEOUT,
+                                        handle_tcp_connection(stream, &catalog, &db),
+                                    ).await;
+                                    match result {
+                                        Ok(Err(e)) => warn!("TCP handler error from {src}: {e}"),
+                                        Err(_) => warn!("TCP handler timeout from {src}"),
+                                        _ => {}
                                     }
+                                    drop(permit);
                                 });
                             }
                             Err(e) => {

@@ -5,6 +5,9 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+/// Maximum size for sync payloads (10 MB)
+const MAX_SYNC_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
+
 /// Listens for config push events from the coordinator and applies them locally.
 pub struct ConfigSyncAgent {
     instance_id: String,
@@ -73,6 +76,15 @@ impl ConfigSyncAgent {
                     zone_json,
                     records_json,
                 } => {
+                    if zone_json.len() + records_json.len() > MAX_SYNC_PAYLOAD_SIZE {
+                        warn!(
+                            instance_id = %self.instance_id,
+                            zone_len = zone_json.len(),
+                            records_len = records_json.len(),
+                            "rejecting oversized zone sync payload"
+                        );
+                        return;
+                    }
                     debug!(
                         instance_id = %self.instance_id,
                         zone_len = zone_json.len(),
@@ -82,6 +94,14 @@ impl ConfigSyncAgent {
                     // In production: deserialize zone + records, upsert into local redb
                 }
                 ConfigPayload::ConfigUpdate { config_toml } => {
+                    if config_toml.len() > MAX_SYNC_PAYLOAD_SIZE {
+                        warn!(
+                            instance_id = %self.instance_id,
+                            config_len = config_toml.len(),
+                            "rejecting oversized config update payload"
+                        );
+                        return;
+                    }
                     debug!(
                         instance_id = %self.instance_id,
                         config_len = config_toml.len(),
