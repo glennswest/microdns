@@ -139,32 +139,31 @@ for rrset in data.get('rrsets', []):
 
         # Map record types
         if rtype == 'A':
-            data_json = '{\"A\": \"' + content + '\"}'
+            rec_data = {'type': 'A', 'data': content}
         elif rtype == 'AAAA':
-            data_json = '{\"AAAA\": \"' + content + '\"}'
+            rec_data = {'type': 'AAAA', 'data': content}
         elif rtype == 'CNAME':
-            data_json = '{\"CNAME\": \"' + content.rstrip('.') + '\"}'
+            rec_data = {'type': 'CNAME', 'data': content.rstrip('.')}
         elif rtype == 'MX':
             parts = content.split()
-            data_json = '{\"MX\": {\"preference\": ' + parts[0] + ', \"exchange\": \"' + parts[1].rstrip('.') + '\"}}'
+            rec_data = {'type': 'MX', 'data': {'preference': int(parts[0]), 'exchange': parts[1].rstrip('.')}}
         elif rtype == 'NS':
-            data_json = '{\"NS\": \"' + content.rstrip('.') + '\"}'
+            rec_data = {'type': 'NS', 'data': content.rstrip('.')}
         elif rtype == 'PTR':
-            data_json = '{\"PTR\": \"' + content.rstrip('.') + '\"}'
+            rec_data = {'type': 'PTR', 'data': content.rstrip('.')}
         elif rtype == 'SRV':
             parts = content.split()
-            data_json = '{\"SRV\": {\"priority\": ' + parts[0] + ', \"weight\": ' + parts[1] + ', \"port\": ' + parts[2] + ', \"target\": \"' + parts[3].rstrip('.') + '\"}}'
+            rec_data = {'type': 'SRV', 'data': {'priority': int(parts[0]), 'weight': int(parts[1]), 'port': int(parts[2]), 'target': parts[3].rstrip('.')}}
         elif rtype == 'TXT':
-            # Strip surrounding quotes if present
             txt = content.strip('\"')
-            data_json = '{\"TXT\": \"' + txt.replace('\"', '\\\\\"') + '\"}'
+            rec_data = {'type': 'TXT', 'data': txt}
         else:
             continue
 
         print(json.dumps({
             'name': name,
             'ttl': ttl,
-            'data': json.loads(data_json)
+            'data': rec_data
         }))
 " | while IFS= read -r record_json; do
         resp=$(curl -s -w "\n%{http_code}" -X POST \

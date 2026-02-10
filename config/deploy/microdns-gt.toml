@@ -6,6 +6,18 @@
 id = "microdns-gt"
 mode = "standalone"
 
+[[instance.peers]]
+id = "microdns-main"
+addr = "192.168.1.199"
+
+[[instance.peers]]
+id = "microdns-g10"
+addr = "192.168.10.199"
+
+[[instance.peers]]
+id = "microdns-g11"
+addr = "192.168.11.199"
+
 [dns.recursor]
 enabled = true
 listen = "0.0.0.0:53"
@@ -13,8 +25,10 @@ cache_size = 10000
 
 [dns.recursor.forward_zones]
 "gw.lo" = ["192.168.1.199:53"]
-"g10.lo" = ["192.168.1.199:53"]
-"g11.lo" = ["192.168.1.199:53"]
+"g10.lo" = ["192.168.10.199:53"]
+"10.168.192.in-addr.arpa" = ["192.168.10.199:53"]
+"g11.lo" = ["192.168.11.199:53"]
+"11.168.192.in-addr.arpa" = ["192.168.11.199:53"]
 "1.168.192.in-addr.arpa" = ["192.168.1.199:53"]
 
 [dhcp.v4]
@@ -57,6 +71,17 @@ forward_zone = "gt.lo"
 reverse_zone_v4 = "200.168.192.in-addr.arpa"
 reverse_zone_v6 = ""
 default_ttl = 300
+
+[ipam]
+enabled = true
+
+[[ipam.pools]]
+name = "gt"
+subnet = "192.168.200.0/24"
+range_start = "192.168.200.10"
+range_end = "192.168.200.199"
+gateway = "192.168.200.1"
+bridge = "bridge-gt"
 
 [api.rest]
 enabled = true

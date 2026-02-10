@@ -1,4 +1,5 @@
 pub mod cluster;
+pub mod connectivity;
 pub mod health;
 pub mod ipam;
 pub mod leases;
@@ -16,4 +17,5 @@ pub fn router() -> Router<AppState> {
         .merge(leases::router())
         .merge(cluster::router())
         .merge(ipam::router())
+        .merge(connectivity::router())
 }

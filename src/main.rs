@@ -262,7 +262,8 @@ async fn main() -> Result<()> {
 
             let mut api = ApiServer::new(addr, db.clone(), rest_config.api_key.clone())
                 .with_instance_id(&config.instance.id)
-                .with_ipam_pools(ipam_pools);
+                .with_ipam_pools(ipam_pools)
+                .with_peers(config.instance.peers.clone());
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());

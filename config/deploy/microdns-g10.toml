@@ -6,6 +6,18 @@
 id = "microdns-g10"
 mode = "standalone"
 
+[[instance.peers]]
+id = "microdns-main"
+addr = "192.168.1.199"
+
+[[instance.peers]]
+id = "microdns-g11"
+addr = "192.168.11.199"
+
+[[instance.peers]]
+id = "microdns-gt"
+addr = "192.168.200.199"
+
 [dns.recursor]
 enabled = true
 listen = "0.0.0.0:53"
@@ -17,6 +29,10 @@ cache_size = 10000
 "pv.lo" = ["192.168.1.199:53"]
 "bm.lo" = ["192.168.1.199:53"]
 "ipmi.lo" = ["192.168.1.199:53"]
+"g11.lo" = ["192.168.11.199:53"]
+"11.168.192.in-addr.arpa" = ["192.168.11.199:53"]
+"gt.lo" = ["192.168.200.199:53"]
+"200.168.192.in-addr.arpa" = ["192.168.200.199:53"]
 "1.168.192.in-addr.arpa" = ["192.168.1.199:53"]
 
 [dhcp.v4]
@@ -111,6 +127,17 @@ forward_zone = "g10.lo"
 reverse_zone_v4 = "10.168.192.in-addr.arpa"
 reverse_zone_v6 = ""
 default_ttl = 300
+
+[ipam]
+enabled = true
+
+[[ipam.pools]]
+name = "g10"
+subnet = "192.168.10.0/24"
+range_start = "192.168.10.200"
+range_end = "192.168.10.249"
+gateway = "192.168.10.1"
+bridge = "bridge"
 
 [api.rest]
 enabled = true

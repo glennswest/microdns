@@ -6,6 +6,18 @@
 id = "microdns-main"
 mode = "standalone"
 
+[[instance.peers]]
+id = "microdns-g10"
+addr = "192.168.10.199"
+
+[[instance.peers]]
+id = "microdns-g11"
+addr = "192.168.11.199"
+
+[[instance.peers]]
+id = "microdns-gt"
+addr = "192.168.200.199"
+
 [dns.recursor]
 enabled = true
 listen = "0.0.0.0:53"
@@ -287,6 +299,17 @@ forward_zone = "gw.lo"
 reverse_zone_v4 = "1.168.192.in-addr.arpa"
 reverse_zone_v6 = ""
 default_ttl = 300
+
+[ipam]
+enabled = true
+
+[[ipam.pools]]
+name = "lan"
+subnet = "192.168.1.0/24"
+range_start = "192.168.1.220"
+range_end = "192.168.1.249"
+gateway = "192.168.1.1"
+bridge = "bridge-lan"
 
 [api.rest]
 enabled = true

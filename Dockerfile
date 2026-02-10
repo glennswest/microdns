@@ -67,6 +67,7 @@ EXPOSE 53/udp
 EXPOSE 53/tcp
 # DNS (recursor)
 EXPOSE 5353/udp
+EXPOSE 5353/tcp
 # DHCP
 EXPOSE 67/udp
 EXPOSE 547/udp

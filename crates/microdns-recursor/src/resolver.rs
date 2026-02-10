@@ -63,12 +63,14 @@ impl Resolver {
 
         debug!("recursor query: {} {}", qname, qtype);
 
-        // Step 1: Check local authoritative zones
+        // Step 1: Check local authoritative zones (skip if zone is in forward table)
         if let Some(ref db) = self.db {
             let lower = LowerName::from(qname.clone());
-            if let Ok(Some(_zone)) = db.find_zone_for_fqdn(&qname_lower) {
-                debug!("resolving {} {} from local auth zone", qname, qtype);
-                return self.resolve_from_local(db, &request, &lower, qtype);
+            if self.forward_table.lookup(&qname_lower).is_none() {
+                if let Ok(Some(_zone)) = db.find_zone_for_fqdn(&qname_lower) {
+                    debug!("resolving {} {} from local auth zone", qname, qtype);
+                    return self.resolve_from_local(db, &request, &lower, qtype, true);
+                }
             }
         }
 
@@ -85,10 +87,22 @@ impl Resolver {
             return Ok(self.rewrite_response_id(&cached_bytes, request.id()));
         }
 
-        // Step 3: Check forward zones
+        // Step 3: Check forward zones (with local fallback on failure)
         if let Some(servers) = self.forward_table.lookup(&qname_lower) {
             debug!("forwarding {} {} to forward zone servers", qname, qtype);
-            return self.forward_query(data, &request, servers, &cache_key).await;
+            let result = self.forward_query(data, &request, servers, &cache_key).await?;
+
+            // If forward failed (SERVFAIL), try local fallback
+            if is_servfail(&result) {
+                if let Some(ref db) = self.db {
+                    if let Ok(Some(_zone)) = db.find_zone_for_fqdn(&qname_lower) {
+                        warn!("forward failed for {} {}, using local fallback", qname, qtype);
+                        let lower = LowerName::from(qname.clone());
+                        return self.resolve_from_local(db, &request, &lower, qtype, false);
+                    }
+                }
+            }
+            return Ok(result);
         }
 
         // Step 4: Forward to upstream resolvers
@@ -103,6 +117,7 @@ impl Resolver {
         request: &Message,
         qname: &LowerName,
         qtype: RecordType,
+        authoritative: bool,
     ) -> anyhow::Result<Vec<u8>> {
         use microdns_core::types::RecordType as MicroRecordType;
 
@@ -112,7 +127,7 @@ impl Resolver {
         response.set_op_code(OpCode::Query);
         response.set_recursion_desired(request.recursion_desired());
         response.set_recursion_available(true);
-        response.set_authoritative(true);
+        response.set_authoritative(authoritative);
 
         for query in request.queries() {
             response.add_query(query.clone());
@@ -345,5 +360,47 @@ fn ensure_fqdn(name: &str) -> String {
         name.to_string()
     } else {
         format!("{name}.")
+    }
+}
+
+/// Check if a raw DNS response has RCODE = SERVFAIL (2).
+fn is_servfail(response: &[u8]) -> bool {
+    response.len() >= 4 && (response[3] & 0x0F) == 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_servfail_true() {
+        // Byte 3, bits 0-3 = 2 (SERVFAIL)
+        let response = vec![0x00, 0x00, 0x80, 0x82]; // QR=1, RCODE=2
+        assert!(is_servfail(&response));
+    }
+
+    #[test]
+    fn test_is_servfail_false_noerror() {
+        let response = vec![0x00, 0x00, 0x80, 0x80]; // QR=1, RCODE=0
+        assert!(!is_servfail(&response));
+    }
+
+    #[test]
+    fn test_is_servfail_false_nxdomain() {
+        let response = vec![0x00, 0x00, 0x80, 0x83]; // QR=1, RCODE=3
+        assert!(!is_servfail(&response));
+    }
+
+    #[test]
+    fn test_is_servfail_short_response() {
+        assert!(!is_servfail(&[0x00, 0x00]));
+        assert!(!is_servfail(&[]));
+    }
+
+    #[test]
+    fn test_is_servfail_ignores_upper_bits() {
+        // Upper 4 bits of byte 3 should be ignored (RA, Z, AD, CD flags)
+        let response = vec![0x00, 0x00, 0x00, 0xF2]; // all upper bits set, RCODE=2
+        assert!(is_servfail(&response));
     }
 }

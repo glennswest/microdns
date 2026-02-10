@@ -29,6 +29,18 @@ pub struct InstanceConfig {
     pub id: String,
     #[serde(default)]
     pub mode: InstanceMode,
+    #[serde(default)]
+    pub peers: Vec<PeerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerConfig {
+    pub id: String,
+    pub addr: String,
+    #[serde(default = "default_peer_dns_port")]
+    pub dns_port: u16,
+    #[serde(default = "default_peer_http_port")]
+    pub http_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +331,12 @@ fn default_report_interval() -> u64 {
 fn default_messaging_backend() -> String {
     "noop".to_string()
 }
+fn default_peer_dns_port() -> u16 {
+    53
+}
+fn default_peer_http_port() -> u16 {
+    8080
+}
 fn default_topic_prefix() -> String {
     "microdns".to_string()
 }
@@ -409,6 +427,58 @@ format = "json"
         assert_eq!(auth.zones.len(), 2);
         let recursor = config.dns.recursor.unwrap();
         assert!(recursor.forward_zones.contains_key("corp.local"));
+    }
+
+    #[test]
+    fn test_parse_peers_config() {
+        let toml_str = r#"
+[instance]
+id = "test-main"
+mode = "standalone"
+
+[[instance.peers]]
+id = "test-g10"
+addr = "192.168.10.199"
+
+[[instance.peers]]
+id = "test-g11"
+addr = "192.168.11.199"
+dns_port = 5353
+http_port = 9090
+
+[database]
+path = "/tmp/test.redb"
+
+[logging]
+level = "debug"
+format = "text"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.instance.peers.len(), 2);
+        assert_eq!(config.instance.peers[0].id, "test-g10");
+        assert_eq!(config.instance.peers[0].addr, "192.168.10.199");
+        assert_eq!(config.instance.peers[0].dns_port, 53); // default
+        assert_eq!(config.instance.peers[0].http_port, 8080); // default
+        assert_eq!(config.instance.peers[1].dns_port, 5353); // custom
+        assert_eq!(config.instance.peers[1].http_port, 9090); // custom
+    }
+
+    #[test]
+    fn test_parse_no_peers() {
+        let toml_str = r#"
+[instance]
+id = "test-01"
+mode = "standalone"
+
+[database]
+path = "/tmp/test.redb"
+
+[logging]
+level = "debug"
+format = "text"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.instance.peers.is_empty());
     }
 
     #[test]

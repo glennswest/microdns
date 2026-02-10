@@ -5,7 +5,7 @@ pub mod ws;
 
 use axum::routing::get;
 use axum::Router;
-use microdns_core::config::IpamPool;
+use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
 use microdns_federation::heartbeat::HeartbeatTracker;
 use std::net::SocketAddr;
@@ -20,6 +20,7 @@ pub struct ApiServer {
     instance_id: String,
     heartbeat_tracker: Option<Arc<HeartbeatTracker>>,
     ipam_pools: Vec<IpamPool>,
+    peers: Vec<PeerConfig>,
 }
 
 #[derive(Clone)]
@@ -29,6 +30,7 @@ pub struct AppState {
     pub instance_id: String,
     pub heartbeat_tracker: Option<Arc<HeartbeatTracker>>,
     pub ipam_pools: Vec<IpamPool>,
+    pub peers: Vec<PeerConfig>,
 }
 
 impl ApiServer {
@@ -40,6 +42,7 @@ impl ApiServer {
             instance_id: String::new(),
             heartbeat_tracker: None,
             ipam_pools: Vec::new(),
+            peers: Vec::new(),
         }
     }
 
@@ -58,6 +61,11 @@ impl ApiServer {
         self
     }
 
+    pub fn with_peers(mut self, peers: Vec<PeerConfig>) -> Self {
+        self.peers = peers;
+        self
+    }
+
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let state = AppState {
             db: self.db,
@@ -65,6 +73,7 @@ impl ApiServer {
             instance_id: self.instance_id,
             heartbeat_tracker: self.heartbeat_tracker,
             ipam_pools: self.ipam_pools,
+            peers: self.peers,
         };
 
         let app = Router::new()

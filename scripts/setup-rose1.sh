@@ -15,12 +15,13 @@ TARBALL="microdns-arm64.tar"
 DNS_SERVER="8.8.8.8"
 SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 
-# Instance definitions: name ip/cidr gateway bridge
+# Instance definitions: name ip/cidr gateway bridge mountprefix
+# mountprefix maps to existing RouterOS mount list names (mdns.{domain})
 INSTANCES=(
-    "microdns-main 192.168.1.199/24 192.168.1.1 bridge-lan"
-    "microdns-g10 192.168.10.199/24 192.168.10.1 bridge"
-    "microdns-g11 192.168.11.199/24 192.168.11.1 bridge-boot"
-    "microdns-gt 192.168.200.199/24 192.168.200.1 bridge-gt"
+    "microdns-main 192.168.1.199/24 192.168.1.88 bridge-lan mdns.gw.lo"
+    "microdns-g10 192.168.10.199/24 192.168.10.1 bridge mdns.g10.lo"
+    "microdns-g11 192.168.11.199/24 192.168.11.1 bridge-boot mdns.g11.lo"
+    "microdns-gt 192.168.200.199/24 192.168.200.1 bridge-gt mdns.gt.lo"
 )
 
 ros() {
@@ -75,8 +76,7 @@ cmd_build_upload() {
 cmd_upload_configs() {
     echo "==> Uploading config files..."
     for inst_line in "${INSTANCES[@]}"; do
-        read -r name _ _ _ <<< "$inst_line"
-        local short="${name#microdns-}"
+        read -r name _ _ _ _ <<< "$inst_line"
         local config_file="${PROJECT_DIR}/config/deploy/${name}.toml"
 
         if [ ! -f "$config_file" ]; then
@@ -96,24 +96,24 @@ cmd_upload_configs() {
 cmd_create_mounts() {
     echo "==> Creating container mounts..."
     for inst_line in "${INSTANCES[@]}"; do
-        read -r name _ _ _ <<< "$inst_line"
-        echo "  Mounts for ${name}..."
-        ros "/container/mounts/add list=${name}.config src=/${VOLUME_DIR}/${name}/config dst=/etc/microdns" 2>/dev/null || true
-        ros "/container/mounts/add list=${name}.data src=/${VOLUME_DIR}/${name}/data dst=/data" 2>/dev/null || true
+        read -r name _ _ _ mprefix <<< "$inst_line"
+        echo "  Mounts for ${name} (${mprefix})..."
+        ros "/container/mounts/add list=${mprefix}.config src=/${VOLUME_DIR}/${name}/config dst=/etc/microdns" 2>/dev/null || true
+        ros "/container/mounts/add list=${mprefix}.data src=/${VOLUME_DIR}/${name}/data dst=/data" 2>/dev/null || true
     done
 }
 
 cmd_create_containers() {
     echo "==> Creating containers..."
     for inst_line in "${INSTANCES[@]}"; do
-        read -r name ip_cidr gateway bridge <<< "$inst_line"
+        read -r name ip_cidr gateway bridge mprefix <<< "$inst_line"
 
         echo "  Creating veth for ${name} (${ip_cidr})..."
         ros "/interface/veth/add name=veth-${name} address=${ip_cidr} gateway=${gateway}" 2>/dev/null || echo "    (veth already exists)"
         ros "/interface/bridge/port add bridge=${bridge} interface=veth-${name}" 2>/dev/null || echo "    (port already exists)"
 
         echo "  Creating container ${name}..."
-        ros "/container/add file=${TARBALL_DIR}/${TARBALL} interface=veth-${name} root-dir=${IMAGE_DIR}/${name} name=${name} start-on-boot=yes logging=yes dns=${DNS_SERVER} mountlists=${name}.config,${name}.data"
+        ros "/container/add file=${TARBALL_DIR}/${TARBALL} interface=veth-${name} root-dir=${IMAGE_DIR}/${name} name=${name} start-on-boot=yes logging=yes dns=${DNS_SERVER} mountlists=${mprefix}.config,${mprefix}.data"
 
         wait_state "${name}" "S"
     done
@@ -122,7 +122,7 @@ cmd_create_containers() {
 cmd_start() {
     echo "==> Starting containers..."
     for inst_line in "${INSTANCES[@]}"; do
-        read -r name _ _ _ <<< "$inst_line"
+        read -r name _ _ _ _ <<< "$inst_line"
         echo "  Starting ${name}..."
         ros "/container/start [find where name=\"${name}\"]" 2>/dev/null || echo "  WARN: Could not start ${name}"
     done
@@ -131,7 +131,7 @@ cmd_start() {
 cmd_stop() {
     echo "==> Stopping containers..."
     for inst_line in "${INSTANCES[@]}"; do
-        read -r name _ _ _ <<< "$inst_line"
+        read -r name _ _ _ _ <<< "$inst_line"
         echo "  Stopping ${name}..."
         ros "/container/stop [find where name=\"${name}\"]" 2>/dev/null || true
     done
@@ -148,7 +148,7 @@ cmd_status() {
 cmd_delete() {
     echo "==> Deleting all microdns containers..."
     for inst_line in "${INSTANCES[@]}"; do
-        read -r name _ _ _ <<< "$inst_line"
+        read -r name _ _ _ _ <<< "$inst_line"
         echo "  Stopping ${name}..."
         ros "/container/stop [find where name=\"${name}\"]" 2>/dev/null || true
         wait_state "${name}" "S" 2>/dev/null || true
