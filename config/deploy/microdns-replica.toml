@@ -29,14 +29,9 @@ pull_interval_secs = 60
 stale_threshold_secs = 300
 peer_timeout_secs = 10
 
-[dns.auth]
-enabled = true
-listen = "0.0.0.0:53"
-zones = []
-
 [dns.recursor]
 enabled = true
-listen = "0.0.0.0:5353"
+listen = "0.0.0.0:53"
 cache_size = 50000
 
 [api.rest]
