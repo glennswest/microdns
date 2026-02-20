@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::types::{IpamAllocation, Record, RecordType, Zone};
+use crate::types::{IpamAllocation, Record, RecordType, ReplicationMeta, Zone};
 use chrono::Utc;
 use redb::{Database, ReadableTable, TableDefinition};
 use std::path::Path;
@@ -24,6 +24,9 @@ const LEASES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("leases")
 /// IPAM allocations table: allocation_id (string) -> IpamAllocation (JSON)
 const IPAM_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ipam_allocations");
 
+/// Replication metadata table: zone_id (string) -> ReplicationMeta (JSON)
+const REPLICATION_META_TABLE: TableDefinition<&str, &str> = TableDefinition::new("replication_meta");
+
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Database>,
@@ -45,6 +48,7 @@ impl Db {
             let _ = write_txn.open_table(RECORDS_BY_ZONE)?;
             let _ = write_txn.open_table(LEASES_TABLE)?;
             let _ = write_txn.open_table(IPAM_TABLE)?;
+            let _ = write_txn.open_table(REPLICATION_META_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -440,6 +444,158 @@ impl Db {
         Ok(Vec::new())
     }
 
+    // --- Replication operations ---
+
+    /// Insert or update a zone by ID. Updates the name index if the zone name changed.
+    pub fn upsert_zone(&self, zone: &Zone) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let id_str = zone.id.to_string();
+            let mut zones = write_txn.open_table(ZONES_TABLE)?;
+            let mut name_idx = write_txn.open_table(ZONE_NAME_INDEX)?;
+
+            // If zone already exists, clean up old name index entry
+            if let Some(existing_json) = zones.get(id_str.as_str())? {
+                let existing: Zone = serde_json::from_str(existing_json.value())?;
+                drop(existing_json);
+                if existing.name != zone.name {
+                    name_idx.remove(existing.name.as_str())?;
+                }
+            }
+
+            let json = serde_json::to_string(zone)?;
+            zones.insert(id_str.as_str(), json.as_str())?;
+            name_idx.insert(zone.name.as_str(), id_str.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Atomically delete all records for a zone and insert new ones.
+    pub fn replace_zone_records(&self, zone_id: &Uuid, records: &[Record]) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut records_table = write_txn.open_table(RECORDS_TABLE)?;
+            let mut by_zone = write_txn.open_table(RECORDS_BY_ZONE)?;
+
+            // Delete existing records for this zone
+            let prefix = format!("{zone_id}:");
+            let mut to_delete = Vec::new();
+            let iter = by_zone.iter()?;
+            for entry in iter {
+                let entry = entry.map_err(|e| Error::Database(e.to_string()))?;
+                let key = entry.0.value().to_string();
+                if key.starts_with(&prefix) {
+                    let record_ids: Vec<String> = entry
+                        .1
+                        .value()
+                        .split(',')
+                        .map(|s| s.to_string())
+                        .collect();
+                    to_delete.push((key, record_ids));
+                }
+            }
+
+            for (index_key, record_ids) in to_delete {
+                by_zone.remove(index_key.as_str())?;
+                for rid in record_ids {
+                    records_table.remove(rid.as_str())?;
+                }
+            }
+
+            // Insert new records
+            for record in records {
+                let id_str = record.id.to_string();
+                let json = serde_json::to_string(record)?;
+                records_table.insert(id_str.as_str(), json.as_str())?;
+
+                let index_key = format!(
+                    "{}:{}:{}",
+                    record.zone_id,
+                    record.name,
+                    record.data.record_type()
+                );
+
+                let new_val = match by_zone.get(index_key.as_str())? {
+                    Some(v) => format!("{},{}", v.value(), id_str),
+                    None => id_str,
+                };
+                by_zone.insert(index_key.as_str(), new_val.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Set or update replication metadata for a zone.
+    pub fn set_replication_meta(&self, meta: &ReplicationMeta) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let id_str = meta.zone_id.to_string();
+            let json = serde_json::to_string(meta)?;
+            let mut table = write_txn.open_table(REPLICATION_META_TABLE)?;
+            table.insert(id_str.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Get replication metadata for a zone.
+    pub fn get_replication_meta(&self, zone_id: &Uuid) -> Result<Option<ReplicationMeta>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(REPLICATION_META_TABLE)?;
+        let id_str = zone_id.to_string();
+        match table.get(id_str.as_str())? {
+            Some(v) => {
+                let meta: ReplicationMeta = serde_json::from_str(v.value())?;
+                Ok(Some(meta))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all replication metadata entries.
+    pub fn list_replication_meta(&self) -> Result<Vec<ReplicationMeta>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(REPLICATION_META_TABLE)?;
+        let mut result = Vec::new();
+        let iter = table.iter()?;
+        for entry in iter {
+            let entry = entry.map_err(|e| Error::Database(e.to_string()))?;
+            let meta: ReplicationMeta = serde_json::from_str(entry.1.value())?;
+            result.push(meta);
+        }
+        Ok(result)
+    }
+
+    /// Delete replication metadata for a zone.
+    pub fn delete_replication_meta(&self, zone_id: &Uuid) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let id_str = zone_id.to_string();
+            let mut table = write_txn.open_table(REPLICATION_META_TABLE)?;
+            table.remove(id_str.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Get all zones replicated from a specific peer.
+    pub fn get_zones_for_peer(&self, peer_id: &str) -> Result<Vec<ReplicationMeta>> {
+        let all = self.list_replication_meta()?;
+        Ok(all
+            .into_iter()
+            .filter(|m| m.source_peer_id == peer_id)
+            .collect())
+    }
+
+    /// Delete a replicated zone and its metadata.
+    pub fn delete_replicated_zone(&self, zone_id: &Uuid) -> Result<()> {
+        self.delete_zone(zone_id)?;
+        self.delete_replication_meta(zone_id)?;
+        Ok(())
+    }
+
     // --- IPAM operations ---
 
     pub fn create_ipam_allocation(&self, alloc: &IpamAllocation) -> Result<()> {
@@ -638,6 +794,95 @@ mod tests {
 
         let results = db.query_fqdn("nope.example.com", RecordType::A).unwrap();
         assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_upsert_zone() {
+        let (db, _dir) = test_db();
+        let zone = make_zone("example.com");
+
+        // Insert via upsert
+        db.upsert_zone(&zone).unwrap();
+        let fetched = db.get_zone_by_name("example.com").unwrap().unwrap();
+        assert_eq!(fetched.id, zone.id);
+
+        // Update via upsert (same name)
+        let mut updated = zone.clone();
+        updated.default_ttl = 600;
+        db.upsert_zone(&updated).unwrap();
+        let fetched = db.get_zone_by_name("example.com").unwrap().unwrap();
+        assert_eq!(fetched.default_ttl, 600);
+
+        // Update via upsert (name change)
+        let mut renamed = updated.clone();
+        renamed.name = "renamed.com".to_string();
+        db.upsert_zone(&renamed).unwrap();
+        assert!(db.get_zone_by_name("example.com").unwrap().is_none());
+        let fetched = db.get_zone_by_name("renamed.com").unwrap().unwrap();
+        assert_eq!(fetched.id, zone.id);
+    }
+
+    #[test]
+    fn test_replace_zone_records() {
+        let (db, _dir) = test_db();
+        let zone = make_zone("example.com");
+        db.create_zone("example.com", &zone).unwrap();
+
+        // Create initial records
+        let r1 = make_record(zone.id, "www", RecordData::A("10.0.0.1".parse().unwrap()));
+        let r2 = make_record(zone.id, "mail", RecordData::A("10.0.0.2".parse().unwrap()));
+        db.create_record(&r1).unwrap();
+        db.create_record(&r2).unwrap();
+        assert_eq!(db.list_records(&zone.id).unwrap().len(), 2);
+
+        // Replace with new set
+        let r3 = make_record(zone.id, "api", RecordData::A("10.0.0.3".parse().unwrap()));
+        db.replace_zone_records(&zone.id, &[r3.clone()]).unwrap();
+        let records = db.list_records(&zone.id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "api");
+
+        // Old records should be gone
+        assert!(db.get_record(&r1.id).unwrap().is_none());
+        assert!(db.get_record(&r2.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_replication_meta_crud() {
+        use crate::types::ReplicationMeta;
+
+        let (db, _dir) = test_db();
+        let zone_id = Uuid::new_v4();
+
+        let meta = ReplicationMeta {
+            zone_id,
+            zone_name: "example.com".to_string(),
+            source_peer_id: "peer-1".to_string(),
+            last_synced: Utc::now(),
+            source_serial: 2024010100,
+        };
+
+        // Set
+        db.set_replication_meta(&meta).unwrap();
+
+        // Get
+        let fetched = db.get_replication_meta(&zone_id).unwrap().unwrap();
+        assert_eq!(fetched.zone_name, "example.com");
+        assert_eq!(fetched.source_peer_id, "peer-1");
+
+        // List
+        let all = db.list_replication_meta().unwrap();
+        assert_eq!(all.len(), 1);
+
+        // Get zones for peer
+        let peer_zones = db.get_zones_for_peer("peer-1").unwrap();
+        assert_eq!(peer_zones.len(), 1);
+        let other_zones = db.get_zones_for_peer("peer-2").unwrap();
+        assert_eq!(other_zones.len(), 0);
+
+        // Delete
+        db.delete_replication_meta(&zone_id).unwrap();
+        assert!(db.get_replication_meta(&zone_id).unwrap().is_none());
     }
 
     #[test]

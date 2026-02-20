@@ -39,8 +39,9 @@ RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
         mkdir -p crates/$crate/src && echo '' > crates/$crate/src/lib.rs; \
     done
 
-# Copy build script and proto file needed for API crate
+# Copy build scripts and proto file needed for API and federation crates
 COPY crates/microdns-api/build.rs crates/microdns-api/
+COPY crates/microdns-federation/build.rs crates/microdns-federation/
 COPY proto/ proto/
 
 # Build dependencies only (cached layer)

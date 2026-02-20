@@ -113,6 +113,10 @@ bridge = "bridge-boot"
 enabled = true
 listen = "0.0.0.0:8080"
 
+[api.grpc]
+enabled = true
+listen = "0.0.0.0:50051"
+
 [database]
 path = "/data/microdns.redb"
 

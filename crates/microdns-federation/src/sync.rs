@@ -1,9 +1,10 @@
 use microdns_core::db::Db;
+use microdns_core::types::{Record, Zone};
 use microdns_msg::events::{ConfigPayload, Event};
 use microdns_msg::MessageBus;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Maximum size for sync payloads (10 MB)
 const MAX_SYNC_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
@@ -12,7 +13,7 @@ const MAX_SYNC_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
 pub struct ConfigSyncAgent {
     instance_id: String,
     message_bus: Arc<dyn MessageBus>,
-    _db: Db,
+    db: Db,
     topic_prefix: String,
 }
 
@@ -26,7 +27,7 @@ impl ConfigSyncAgent {
         Self {
             instance_id: instance_id.to_string(),
             message_bus,
-            _db: db,
+            db,
             topic_prefix: topic_prefix.to_string(),
         }
     }
@@ -91,7 +92,56 @@ impl ConfigSyncAgent {
                         records_len = records_json.len(),
                         "received zone sync from coordinator"
                     );
-                    // In production: deserialize zone + records, upsert into local redb
+
+                    match serde_json::from_str::<Zone>(zone_json) {
+                        Ok(zone) => {
+                            if let Err(e) = self.db.upsert_zone(&zone) {
+                                error!(
+                                    instance_id = %self.instance_id,
+                                    zone = %zone.name,
+                                    error = %e,
+                                    "failed to upsert zone from sync"
+                                );
+                                return;
+                            }
+
+                            match serde_json::from_str::<Vec<Record>>(records_json) {
+                                Ok(records) => {
+                                    if let Err(e) =
+                                        self.db.replace_zone_records(&zone.id, &records)
+                                    {
+                                        error!(
+                                            instance_id = %self.instance_id,
+                                            zone = %zone.name,
+                                            error = %e,
+                                            "failed to replace zone records from sync"
+                                        );
+                                    } else {
+                                        info!(
+                                            instance_id = %self.instance_id,
+                                            zone = %zone.name,
+                                            records = records.len(),
+                                            "zone sync applied"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        instance_id = %self.instance_id,
+                                        error = %e,
+                                        "failed to deserialize records_json in zone sync"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                instance_id = %self.instance_id,
+                                error = %e,
+                                "failed to deserialize zone_json in zone sync"
+                            );
+                        }
+                    }
                 }
                 ConfigPayload::ConfigUpdate { config_toml } => {
                     if config_toml.len() > MAX_SYNC_PAYLOAD_SIZE {

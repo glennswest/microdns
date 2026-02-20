@@ -1232,10 +1232,13 @@ dependencies = [
  "chrono",
  "microdns-core",
  "microdns-msg",
+ "prost",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tonic",
+ "tonic-build",
  "tracing",
  "uuid",
 ]

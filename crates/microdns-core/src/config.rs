@@ -22,6 +22,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub ipam: Option<IpamConfig>,
+    #[serde(default)]
+    pub replication: Option<ReplicationConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +43,8 @@ pub struct PeerConfig {
     pub dns_port: u16,
     #[serde(default = "default_peer_http_port")]
     pub http_port: u16,
+    #[serde(default = "default_peer_grpc_port")]
+    pub grpc_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +286,18 @@ pub struct IpamPool {
     pub bridge: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_pull_interval")]
+    pub pull_interval_secs: u64,
+    #[serde(default = "default_stale_threshold")]
+    pub stale_threshold_secs: u64,
+    #[serde(default = "default_peer_timeout")]
+    pub peer_timeout_secs: u64,
+}
+
 // Default value functions
 fn default_true() -> bool {
     true
@@ -336,6 +352,18 @@ fn default_peer_dns_port() -> u16 {
 }
 fn default_peer_http_port() -> u16 {
     8080
+}
+fn default_peer_grpc_port() -> u16 {
+    50051
+}
+fn default_pull_interval() -> u64 {
+    60
+}
+fn default_stale_threshold() -> u64 {
+    300
+}
+fn default_peer_timeout() -> u64 {
+    10
 }
 fn default_topic_prefix() -> String {
     "microdns".to_string()

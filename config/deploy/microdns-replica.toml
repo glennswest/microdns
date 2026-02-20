@@ -1,0 +1,58 @@
+# MicroDNS Replica Instance
+# IP: 192.168.1.51 (dnsx.gw.lo)
+# Mirrors all zones from primary instances via gRPC pull-based replication
+# Provides DNS redundancy if rose1 goes down
+
+[instance]
+id = "microdns-replica"
+mode = "standalone"
+
+[[instance.peers]]
+id = "microdns-main"
+addr = "192.168.1.199"
+
+[[instance.peers]]
+id = "microdns-g10"
+addr = "192.168.10.199"
+
+[[instance.peers]]
+id = "microdns-g11"
+addr = "192.168.11.199"
+
+[[instance.peers]]
+id = "microdns-gt"
+addr = "192.168.200.199"
+
+[replication]
+enabled = true
+pull_interval_secs = 60
+stale_threshold_secs = 300
+peer_timeout_secs = 10
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:53"
+zones = []
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:5353"
+cache_size = 50000
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[api.grpc]
+enabled = true
+listen = "0.0.0.0:50051"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"
+
+[messaging]
+backend = "noop"

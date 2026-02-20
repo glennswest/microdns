@@ -198,6 +198,16 @@ pub struct IpamAllocation {
     pub created_at: DateTime<Utc>,
 }
 
+/// Replication metadata for tracking zone sync state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicationMeta {
+    pub zone_id: Uuid,
+    pub zone_name: String,
+    pub source_peer_id: String,
+    pub last_synced: DateTime<Utc>,
+    pub source_serial: u32,
+}
+
 /// Instance mode for federation
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

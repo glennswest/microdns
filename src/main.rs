@@ -134,6 +134,25 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Start replication agent if configured
+    if let Some(ref repl_config) = config.replication {
+        if repl_config.enabled {
+            let agent = microdns_federation::replication::ReplicationAgent::new(
+                &config.instance.id,
+                db.clone(),
+                config.instance.peers.clone(),
+                repl_config.clone(),
+            );
+            let rx = shutdown_rx.clone();
+            tasks.push(tokio::spawn(async move {
+                if let Err(e) = agent.run(rx).await {
+                    error!("replication agent error: {e}");
+                }
+            }));
+            info!("replication agent started");
+        }
+    }
+
     // Start auth DNS server
     if let Some(ref auth_config) = config.dns.auth {
         if auth_config.enabled {
