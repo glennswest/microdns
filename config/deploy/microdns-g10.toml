@@ -47,7 +47,7 @@ gateway = "192.168.10.1"
 dns = ["192.168.1.199"]
 domain = "g10.lo"
 lease_time_secs = 600
-next_server = "192.168.200.10"
+next_server = "192.168.10.200"
 boot_file = "undionly.kpxe"
 
 # Static reservations (14 entries from rose1 dhcp10)
