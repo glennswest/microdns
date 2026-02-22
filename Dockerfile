@@ -53,8 +53,12 @@ COPY . .
 # Touch source files to invalidate cache for actual sources only
 RUN find . -name "*.rs" -exec touch {} +
 
-# Build release binary
+# Build release binary — set CC/linker so musl-gcc is found on native arch
 ENV RUSTFLAGS="-C target-feature=+crt-static"
+ENV CC_aarch64_unknown_linux_musl=musl-gcc
+ENV CC_x86_64_unknown_linux_musl=musl-gcc
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 RUN cargo build --release --target $(cat /tmp/rust-target) && \
     cp /build/target/$(cat /tmp/rust-target)/release/microdns /microdns-bin
 
