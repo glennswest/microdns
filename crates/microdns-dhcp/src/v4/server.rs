@@ -109,68 +109,104 @@ impl Dhcpv4Server {
     }
 
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        // Bind to port 67 (DHCP server port) on 0.0.0.0
-        let socket = UdpSocket::bind("0.0.0.0:67").await?;
-        socket.set_broadcast(true)?;
-        info!("DHCPv4 server listening on 0.0.0.0:67");
+        let ports = &self._config.listen_ports;
+
+        // Primary socket on first port (used for sending responses)
+        let primary_port = ports.first().copied().unwrap_or(67);
+        let primary = UdpSocket::bind(format!("0.0.0.0:{primary_port}")).await?;
+        primary.set_broadcast(true)?;
+        info!("DHCPv4 server listening on 0.0.0.0:{primary_port}");
+
+        // Additional sockets for alternate ports (receive only)
+        let mut alt_sockets = Vec::new();
+        for &port in ports.iter().skip(1) {
+            match UdpSocket::bind(format!("0.0.0.0:{port}")).await {
+                Ok(s) => {
+                    s.set_broadcast(true)?;
+                    info!("DHCPv4 server also listening on 0.0.0.0:{port}");
+                    alt_sockets.push(s);
+                }
+                Err(e) => warn!("failed to bind DHCP alt port {port}: {e}"),
+            }
+        }
 
         // Restore existing leases into pools
         self.restore_leases().await?;
 
         let mut buf = vec![0u8; 1500];
+        let mut alt_buf = vec![0u8; 1500];
         let mut shutdown = shutdown;
 
         loop {
-            tokio::select! {
-                result = socket.recv_from(&mut buf) => {
-                    let (len, src) = result?;
-                    let data = &buf[..len];
-
-                    let packet = match DhcpPacket::parse(data) {
-                        Some(p) => p,
-                        None => {
-                            debug!("invalid DHCP packet from {src}");
-                            continue;
+            // Receive from primary or first alt socket
+            let recv_result = if let Some(alt) = alt_sockets.first() {
+                tokio::select! {
+                    r = primary.recv_from(&mut buf) => r.map(|(len, src)| (len, src, &buf)),
+                    r = alt.recv_from(&mut alt_buf) => r.map(|(len, src)| (len, src, &alt_buf)),
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() {
+                            info!("DHCPv4 server shutting down");
+                            break;
                         }
-                    };
-
-                    // Only process BOOTREQUEST (client -> server)
-                    if packet.op != 1 {
                         continue;
                     }
-
-                    let response = match self.handle_packet(&packet).await {
-                        Ok(Some(resp)) => resp,
-                        Ok(None) => continue,
-                        Err(e) => {
-                            warn!("error handling DHCP packet: {e}");
-                            continue;
+                }
+            } else {
+                tokio::select! {
+                    r = primary.recv_from(&mut buf) => r.map(|(len, src)| (len, src, &buf)),
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() {
+                            info!("DHCPv4 server shutting down");
+                            break;
                         }
-                    };
-
-                    let dest = if packet.giaddr != Ipv4Addr::UNSPECIFIED {
-                        // Relay agent
-                        SocketAddr::new(packet.giaddr.into(), 67)
-                    } else if packet.flags & 0x8000 != 0 {
-                        // Broadcast flag set
-                        SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
-                    } else if response.yiaddr != Ipv4Addr::UNSPECIFIED {
-                        SocketAddr::new(response.yiaddr.into(), 68)
-                    } else {
-                        SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
-                    };
-
-                    let resp_bytes = response.to_bytes();
-                    if let Err(e) = socket.send_to(&resp_bytes, dest).await {
-                        error!("failed to send DHCP response: {e}");
+                        continue;
                     }
                 }
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        info!("DHCPv4 server shutting down");
-                        break;
-                    }
+            };
+
+            let (len, src, data) = match recv_result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("DHCP recv error: {e}");
+                    continue;
                 }
+            };
+
+            let packet = match DhcpPacket::parse(&data[..len]) {
+                Some(p) => p,
+                None => {
+                    debug!("invalid DHCP packet from {src}");
+                    continue;
+                }
+            };
+
+            if packet.op != 1 {
+                continue;
+            }
+
+            let response = match self.handle_packet(&packet).await {
+                Ok(Some(resp)) => resp,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!("error handling DHCP packet: {e}");
+                    continue;
+                }
+            };
+
+            let dest = if packet.giaddr != Ipv4Addr::UNSPECIFIED {
+                SocketAddr::new(packet.giaddr.into(), 67)
+            } else if packet.flags & 0x8000 != 0 {
+                SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
+            } else if response.yiaddr != Ipv4Addr::UNSPECIFIED {
+                SocketAddr::new(response.yiaddr.into(), 68)
+            } else {
+                SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
+            };
+
+            let resp_bytes = response.to_bytes();
+            // Always send via primary socket (standard DHCP port)
+            if let Err(e) = primary.send_to(&resp_bytes, dest).await {
+                error!("failed to send DHCP response: {e}");
             }
         }
 

@@ -118,6 +118,12 @@ pub struct DhcpV4Config {
     pub pools: Vec<DhcpV4Pool>,
     #[serde(default)]
     pub reservations: Vec<DhcpReservation>,
+    #[serde(default = "default_dhcp_ports")]
+    pub listen_ports: Vec<u16>,
+}
+
+fn default_dhcp_ports() -> Vec<u16> {
+    vec![67]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

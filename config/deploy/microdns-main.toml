@@ -293,6 +293,11 @@ mac = "00:0C:29:D9:1C:AE"
 ip = "10.19.33.100"
 hostname = "prov"
 
+[[dhcp.v4.reservations]]
+mac = "FC:4C:EA:F9:4F:2F"
+ip = "192.168.1.119"
+hostname = "gb10"
+
 [dhcp.dns_registration]
 enabled = true
 forward_zone = "gw.lo"
