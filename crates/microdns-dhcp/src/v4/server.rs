@@ -4,6 +4,8 @@ use crate::v4::packet::*;
 use crate::v4::pool::{prefix_len_from_subnet, subnet_mask_from_prefix, Ipv4Pool};
 use microdns_core::config::DhcpV4Config;
 use microdns_core::db::Db;
+use microdns_msg::events::Event;
+use microdns_msg::MessageBus;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -28,6 +30,8 @@ pub struct Dhcpv4Server {
     server_ip: Ipv4Addr,
     lease_manager: Arc<LeaseManager>,
     dns_registrar: Option<Arc<DnsRegistrar>>,
+    message_bus: Option<Arc<dyn MessageBus>>,
+    instance_id: String,
 }
 
 impl Dhcpv4Server {
@@ -88,11 +92,19 @@ impl Dhcpv4Server {
             server_ip,
             lease_manager,
             dns_registrar: None,
+            message_bus: None,
+            instance_id: String::new(),
         })
     }
 
     pub fn with_dns_registrar(mut self, registrar: Arc<DnsRegistrar>) -> Self {
         self.dns_registrar = Some(registrar);
+        self
+    }
+
+    pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>, instance_id: &str) -> Self {
+        self.message_bus = Some(bus);
+        self.instance_id = instance_id.to_string();
         self
     }
 
@@ -307,6 +319,21 @@ impl Dhcpv4Server {
 
         info!("ACK: assigned {ip} to {mac} (lease: {lease_time}s)");
 
+        // Publish lease event
+        if let Some(ref bus) = self.message_bus {
+            let event = Event::LeaseCreated {
+                instance_id: self.instance_id.clone(),
+                ip_addr: ip.to_string(),
+                mac_addr: mac.clone(),
+                hostname: hostname.clone(),
+                pool_id: domain.clone(),
+                timestamp: chrono::Utc::now(),
+            };
+            if let Err(e) = bus.publish(&event).await {
+                warn!("failed to publish LeaseCreated event: {e}");
+            }
+        }
+
         // DNS auto-registration
         if let (Some(ref registrar), Some(ref name)) = (&self.dns_registrar, &hostname) {
             if let Err(e) = registrar.register_v4(name, ip) {
@@ -348,6 +375,19 @@ impl Dhcpv4Server {
         // Release lease in DB
         self.lease_manager.release_lease_by_mac(&mac)?;
         info!("released {ip} from {mac}");
+
+        // Publish release event
+        if let Some(ref bus) = self.message_bus {
+            let event = Event::LeaseReleased {
+                instance_id: self.instance_id.clone(),
+                ip_addr: ip.to_string(),
+                mac_addr: mac.clone(),
+                timestamp: chrono::Utc::now(),
+            };
+            if let Err(e) = bus.publish(&event).await {
+                warn!("failed to publish LeaseReleased event: {e}");
+            }
+        }
 
         Ok(())
     }

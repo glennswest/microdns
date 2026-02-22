@@ -16,6 +16,8 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
 
+pub use rest::dhcp::DhcpStatusConfig;
+
 /// Maximum request body size (1 MB)
 const MAX_BODY_SIZE: usize = 1024 * 1024;
 
@@ -30,6 +32,7 @@ pub struct ApiServer {
     heartbeat_tracker: Option<Arc<HeartbeatTracker>>,
     ipam_pools: Vec<IpamPool>,
     peers: Vec<PeerConfig>,
+    dhcp_status: DhcpStatusConfig,
 }
 
 #[derive(Clone)]
@@ -41,6 +44,7 @@ pub struct AppState {
     pub ipam_pools: Vec<IpamPool>,
     pub peers: Vec<PeerConfig>,
     pub ws_connections: Arc<AtomicUsize>,
+    pub dhcp_status: DhcpStatusConfig,
 }
 
 impl ApiServer {
@@ -53,6 +57,7 @@ impl ApiServer {
             heartbeat_tracker: None,
             ipam_pools: Vec::new(),
             peers: Vec::new(),
+            dhcp_status: DhcpStatusConfig::default(),
         }
     }
 
@@ -76,6 +81,11 @@ impl ApiServer {
         self
     }
 
+    pub fn with_dhcp_status(mut self, status: DhcpStatusConfig) -> Self {
+        self.dhcp_status = status;
+        self
+    }
+
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let state = AppState {
             db: self.db,
@@ -85,6 +95,7 @@ impl ApiServer {
             ipam_pools: self.ipam_pools,
             peers: self.peers,
             ws_connections: Arc::new(AtomicUsize::new(0)),
+            dhcp_status: self.dhcp_status,
         };
 
         let app = Router::new()

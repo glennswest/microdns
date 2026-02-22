@@ -43,6 +43,7 @@ toml = "0.8"
 
 # Messaging
 rdkafka = { version = "0.36", features = ["cmake-build"] }
+async-nats = "0.38"
 
 # Networking
 socket2 = { version = "0.5", features = ["all"] }

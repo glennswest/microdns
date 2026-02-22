@@ -179,6 +179,54 @@ impl LeaseManager {
         Ok(count)
     }
 
+    /// Delete leases that expired more than `retention` ago.
+    /// Returns (ip_addr, mac_addr) pairs for each purged lease.
+    pub fn purge_expired_leases_with_details(
+        &self,
+        retention: chrono::Duration,
+    ) -> Result<Vec<(String, String)>> {
+        let cutoff = Utc::now() - retention;
+        let write_txn = self.db.raw().begin_write()?;
+        let details;
+        {
+            let mut leases = write_txn.open_table(LEASES_TABLE)?;
+            let mut mac_idx = write_txn.open_table(MAC_LEASE_INDEX)?;
+            let mut ip_idx = write_txn.open_table(IP_LEASE_INDEX)?;
+
+            let mut to_delete: Vec<(String, String, String)> = Vec::new();
+            {
+                let iter = leases.iter()?;
+                for entry in iter {
+                    let entry =
+                        entry.map_err(|e| microdns_core::error::Error::Database(e.to_string()))?;
+                    let lease: Lease = serde_json::from_str(entry.1.value())?;
+                    if lease.lease_end < cutoff
+                        && (lease.state == LeaseState::Released
+                            || lease.state == LeaseState::Active)
+                    {
+                        to_delete.push((
+                            entry.0.value().to_string(),
+                            lease.mac_addr,
+                            lease.ip_addr,
+                        ));
+                    }
+                }
+            }
+
+            details = to_delete
+                .iter()
+                .map(|(_, mac, ip)| (ip.clone(), mac.clone()))
+                .collect();
+            for (id, mac, ip) in &to_delete {
+                leases.remove(id.as_str())?;
+                mac_idx.remove(mac.as_str())?;
+                ip_idx.remove(ip.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(details)
+    }
+
     pub fn db(&self) -> &Db {
         &self.db
     }

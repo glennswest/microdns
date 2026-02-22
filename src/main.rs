@@ -45,14 +45,16 @@ async fn main() -> Result<()> {
     let mut tasks = Vec::new();
 
     // Initialize message bus
-    let (backend, topic_prefix, brokers) = if let Some(ref msg_config) = config.messaging {
+    let (backend, topic_prefix, brokers, nats_url) = if let Some(ref msg_config) = config.messaging
+    {
         (
             msg_config.backend.as_str().to_string(),
             msg_config.topic_prefix.clone(),
             msg_config.brokers.clone(),
+            msg_config.url.clone(),
         )
     } else {
-        ("noop".to_string(), "microdns".to_string(), vec![])
+        ("noop".to_string(), "microdns".to_string(), vec![], None)
     };
 
     let message_bus: Arc<dyn microdns_msg::MessageBus> = Arc::from(
@@ -61,7 +63,9 @@ async fn main() -> Result<()> {
             &config.instance.id,
             &topic_prefix,
             &brokers,
-        )?,
+            nats_url.as_deref(),
+        )
+        .await?,
     );
     info!(backend = %backend, "message bus initialized");
 
@@ -232,6 +236,7 @@ async fn main() -> Result<()> {
                 if let Some(ref registrar) = dns_registrar {
                     server = server.with_dns_registrar(registrar.clone());
                 }
+                server = server.with_message_bus(message_bus.clone(), &config.instance.id);
                 let rx = shutdown_rx.clone();
                 tasks.push(tokio::spawn(async move {
                     if let Err(e) = server.run(rx).await {
@@ -272,6 +277,8 @@ async fn main() -> Result<()> {
     {
         let db_cleanup = db.clone();
         let rx = shutdown_rx.clone();
+        let purge_bus = message_bus.clone();
+        let purge_instance_id = config.instance.id.clone();
         tasks.push(tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
             let mut rx = rx;
@@ -279,9 +286,22 @@ async fn main() -> Result<()> {
                 tokio::select! {
                     _ = interval.tick() => {
                         let mgr = microdns_dhcp::lease::LeaseManager::new(db_cleanup.clone());
-                        match mgr.purge_expired_leases(chrono::Duration::hours(24)) {
-                            Ok(0) => {}
-                            Ok(n) => info!("purged {n} expired leases"),
+                        match mgr.purge_expired_leases_with_details(chrono::Duration::hours(24)) {
+                            Ok(purged) if purged.is_empty() => {}
+                            Ok(purged) => {
+                                info!("purged {} expired leases", purged.len());
+                                for (ip, mac) in &purged {
+                                    let event = microdns_msg::events::Event::LeaseReleased {
+                                        instance_id: purge_instance_id.clone(),
+                                        ip_addr: ip.clone(),
+                                        mac_addr: mac.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                    };
+                                    if let Err(e) = purge_bus.publish(&event).await {
+                                        error!("failed to publish purge LeaseReleased: {e}");
+                                    }
+                                }
+                            }
                             Err(e) => error!("lease cleanup error: {e}"),
                         }
                     }
@@ -304,10 +324,39 @@ async fn main() -> Result<()> {
                 .map(|c| c.pools.clone())
                 .unwrap_or_default();
 
+            // Build DHCP status summary for API
+            let dhcp_status = if let Some(ref dhcp_cfg) = config.dhcp {
+                if let Some(ref v4) = dhcp_cfg.v4 {
+                    microdns_api::DhcpStatusConfig {
+                        enabled: v4.enabled,
+                        interface: v4.interface.clone(),
+                        pools: v4
+                            .pools
+                            .iter()
+                            .map(|p| microdns_api::rest::dhcp::DhcpPoolSummary {
+                                range_start: p.range_start.clone(),
+                                range_end: p.range_end.clone(),
+                                subnet: p.subnet.clone(),
+                                gateway: p.gateway.clone(),
+                                domain: p.domain.clone(),
+                                lease_time_secs: p.lease_time_secs,
+                                pxe_enabled: p.next_server.is_some(),
+                            })
+                            .collect(),
+                        reservation_count: v4.reservations.len(),
+                    }
+                } else {
+                    microdns_api::DhcpStatusConfig::default()
+                }
+            } else {
+                microdns_api::DhcpStatusConfig::default()
+            };
+
             let mut api = ApiServer::new(addr, db.clone(), rest_config.api_key.clone())
                 .with_instance_id(&config.instance.id)
                 .with_ipam_pools(ipam_pools)
-                .with_peers(config.instance.peers.clone());
+                .with_peers(config.instance.peers.clone())
+                .with_dhcp_status(dhcp_status);
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());

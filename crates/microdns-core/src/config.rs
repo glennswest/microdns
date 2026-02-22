@@ -188,6 +188,8 @@ pub struct MessagingConfig {
     pub backend: String,
     #[serde(default)]
     pub brokers: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default = "default_topic_prefix")]
     pub topic_prefix: String,
 }

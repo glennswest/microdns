@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 microdns-core.workspace = true
+microdns-msg.workspace = true
 tokio.workspace = true
 socket2 = { workspace = true }
 redb.workspace = true
