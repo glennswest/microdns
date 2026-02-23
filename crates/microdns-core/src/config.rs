@@ -115,6 +115,10 @@ pub struct DhcpV4Config {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub interface: String,
+    /// The DHCP server's own IP address, used for siaddr and option 54
+    /// (server identifier). If not set, falls back to the first pool's gateway.
+    #[serde(default)]
+    pub server_ip: Option<String>,
     pub pools: Vec<DhcpV4Pool>,
     #[serde(default)]
     pub reservations: Vec<DhcpReservation>,
@@ -140,6 +144,8 @@ pub struct DhcpV4Pool {
     pub next_server: Option<String>,
     #[serde(default)]
     pub boot_file: Option<String>,
+    #[serde(default)]
+    pub ipxe_boot_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

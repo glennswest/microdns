@@ -391,9 +391,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
-    info!("shutdown signal received, stopping services...");
+    // Wait for shutdown signal (SIGINT or SIGTERM)
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+        tokio::select! {
+            _ = sigterm.recv() => info!("SIGTERM received, stopping services..."),
+            _ = sigint.recv() => info!("SIGINT received, stopping services..."),
+        }
+    }
     let _ = shutdown_tx.send(true);
 
     // Shut down message bus

@@ -18,6 +18,8 @@ use tracing::{debug, error, info, warn};
 struct PxeConfig {
     next_server: Ipv4Addr,
     boot_file: String,
+    /// HTTP boot script URL served to iPXE clients instead of the TFTP boot file
+    ipxe_boot_url: Option<String>,
 }
 
 pub struct Dhcpv4Server {
@@ -62,6 +64,7 @@ impl Dhcpv4Server {
                 (Some(ns), Some(bf)) => Some(PxeConfig {
                     next_server: ns.parse()?,
                     boot_file: bf.clone(),
+                    ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
                 }),
                 _ => None,
             };
@@ -76,10 +79,16 @@ impl Dhcpv4Server {
             reservations.insert(mac, (ip, res.hostname.clone()));
         }
 
-        // Use first pool's gateway as server IP
-        let server_ip = pools
-            .first()
-            .map(|p| p.gateway)
+        // Use configured server_ip if provided, otherwise fall back to first
+        // pool's gateway. The server_ip is used for siaddr and option 54 (server
+        // identifier) — it must be the DHCP server's own IP, NOT the gateway,
+        // otherwise DHCP relays that use the gateway as their local-address will
+        // confuse the OFFER with their own traffic and stop forwarding.
+        let server_ip = config
+            .server_ip
+            .as_deref()
+            .and_then(|s| s.parse::<Ipv4Addr>().ok())
+            .or_else(|| pools.first().map(|p| p.gateway))
             .unwrap_or(Ipv4Addr::UNSPECIFIED);
 
         let lease_manager = Arc::new(LeaseManager::new(db));
@@ -110,61 +119,38 @@ impl Dhcpv4Server {
 
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let ports = &self._config.listen_ports;
-
-        // Primary socket on first port (used for sending responses)
         let primary_port = ports.first().copied().unwrap_or(67);
-        let primary = UdpSocket::bind(format!("0.0.0.0:{primary_port}")).await?;
-        primary.set_broadcast(true)?;
-        info!("DHCPv4 server listening on 0.0.0.0:{primary_port}");
 
-        // Additional sockets for alternate ports (receive only)
-        let mut alt_sockets = Vec::new();
-        for &port in ports.iter().skip(1) {
-            match UdpSocket::bind(format!("0.0.0.0:{port}")).await {
-                Ok(s) => {
-                    s.set_broadcast(true)?;
-                    info!("DHCPv4 server also listening on 0.0.0.0:{port}");
-                    alt_sockets.push(s);
-                }
-                Err(e) => warn!("failed to bind DHCP alt port {port}: {e}"),
-            }
-        }
+        info!("DHCPv4 server listening on 0.0.0.0:{primary_port}");
 
         // Restore existing leases into pools
         self.restore_leases().await?;
 
         let mut buf = vec![0u8; 1500];
-        let mut alt_buf = vec![0u8; 1500];
         let mut shutdown = shutdown;
 
         loop {
-            // Receive from primary or first alt socket
-            let recv_result = if let Some(alt) = alt_sockets.first() {
-                tokio::select! {
-                    r = primary.recv_from(&mut buf) => r.map(|(len, src)| (len, src, &buf)),
-                    r = alt.recv_from(&mut alt_buf) => r.map(|(len, src)| (len, src, &alt_buf)),
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() {
-                            info!("DHCPv4 server shutting down");
-                            break;
-                        }
-                        continue;
+            // Open a fresh recv socket each iteration. RouterOS container
+            // networking bug: any send_to() from inside the container corrupts
+            // the veth receive path. Closing and reopening both the recv and
+            // send sockets between each transaction resets the veth state.
+            let recv_socket = bind_recv_socket(primary_port)?;
+
+            let recv_result = tokio::select! {
+                r = recv_socket.recv_from(&mut buf) => r,
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        info!("DHCPv4 server shutting down");
+                        break;
                     }
-                }
-            } else {
-                tokio::select! {
-                    r = primary.recv_from(&mut buf) => r.map(|(len, src)| (len, src, &buf)),
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() {
-                            info!("DHCPv4 server shutting down");
-                            break;
-                        }
-                        continue;
-                    }
+                    continue;
                 }
             };
 
-            let (len, src, data) = match recv_result {
+            // Drop recv socket BEFORE sending — frees the veth state
+            drop(recv_socket);
+
+            let (len, src) = match recv_result {
                 Ok(v) => v,
                 Err(e) => {
                     warn!("DHCP recv error: {e}");
@@ -172,7 +158,7 @@ impl Dhcpv4Server {
                 }
             };
 
-            let packet = match DhcpPacket::parse(&data[..len]) {
+            let packet = match DhcpPacket::parse(&buf[..len]) {
                 Some(p) => p,
                 None => {
                     debug!("invalid DHCP packet from {src}");
@@ -181,6 +167,16 @@ impl Dhcpv4Server {
             };
 
             if packet.op != 1 {
+                continue;
+            }
+
+            // Skip raw broadcast packets (giaddr=0) — only process relay
+            // unicasts. RouterOS bridges flood DHCP broadcasts to all ports
+            // including container veths. Sending a response to a broadcast
+            // destination corrupts the veth receive path. Relay packets have
+            // giaddr set and responses go unicast to the relay, which is safe.
+            if packet.giaddr == Ipv4Addr::UNSPECIFIED {
+                debug!("ignoring raw broadcast DHCP from {src} (no relay giaddr)");
                 continue;
             }
 
@@ -204,10 +200,13 @@ impl Dhcpv4Server {
             };
 
             let resp_bytes = response.to_bytes();
-            // Always send via primary socket (standard DHCP port)
-            if let Err(e) = primary.send_to(&resp_bytes, dest).await {
-                error!("failed to send DHCP response: {e}");
+            // Fresh send socket — created, used once, then dropped
+            debug!("sending DHCP response ({} bytes) to {dest}", resp_bytes.len());
+            match send_one_shot(&resp_bytes, dest) {
+                Ok(n) => debug!("sent DHCP response to {dest} ({n} bytes)"),
+                Err(e) => error!("failed to send DHCP response to {dest}: {e}"),
             }
+            // send socket dropped here, recv socket reopens at top of loop
         }
 
         Ok(())
@@ -497,21 +496,41 @@ impl Dhcpv4Server {
             }
         }
 
-        // PXE boot options
+        // PXE boot options — detect iPXE clients via option 175 (iPXE
+        // encapsulated options, always sent by iPXE) or user-class "iPXE".
         let pxe_idx = pool_idx.unwrap_or(0);
         if let Some(Some(ref pxe)) = self.pxe_configs.get(pxe_idx) {
-            siaddr = pxe.next_server;
-            options.push(string_option(OPT_TFTP_SERVER, &pxe.next_server.to_string()));
-            options.push(string_option(OPT_BOOTFILE, &pxe.boot_file));
+            let is_ipxe = request.get_option(OPT_IPXE_ENCAP).is_some()
+                || request
+                    .get_option(OPT_USER_CLASS)
+                    .map(|d| d.windows(4).any(|w| w == b"iPXE"))
+                    .unwrap_or(false);
 
-            // Populate sname field with next-server IP
-            let ns_str = pxe.next_server.to_string();
-            let ns_bytes = ns_str.as_bytes();
-            let len = ns_bytes.len().min(63);
-            sname[..len].copy_from_slice(&ns_bytes[..len]);
+            let boot_file = if is_ipxe {
+                if let Some(ref url) = pxe.ipxe_boot_url {
+                    debug!("iPXE client detected, serving boot URL: {}", url);
+                    url.as_str()
+                } else {
+                    &pxe.boot_file
+                }
+            } else {
+                &pxe.boot_file
+            };
+
+            // Only set siaddr/sname for TFTP boots (non-iPXE)
+            if !is_ipxe {
+                siaddr = pxe.next_server;
+                let ns_str = pxe.next_server.to_string();
+                let ns_bytes = ns_str.as_bytes();
+                let len = ns_bytes.len().min(63);
+                sname[..len].copy_from_slice(&ns_bytes[..len]);
+                options.push(string_option(OPT_TFTP_SERVER, &pxe.next_server.to_string()));
+            }
+
+            options.push(string_option(OPT_BOOTFILE, boot_file));
 
             // Populate file field with boot filename
-            let bf_bytes = pxe.boot_file.as_bytes();
+            let bf_bytes = boot_file.as_bytes();
             let len = bf_bytes.len().min(127);
             file[..len].copy_from_slice(&bf_bytes[..len]);
         }
@@ -521,6 +540,16 @@ impl Dhcpv4Server {
             data: Vec::new(),
         });
 
+        // When responding via relay (giaddr set), force broadcast flag so the
+        // relay broadcasts the response to the client. Without this, the relay
+        // tries to unicast to yiaddr which fails because the client has no ARP
+        // entry for that IP yet.
+        let flags = if request.giaddr != Ipv4Addr::UNSPECIFIED {
+            request.flags | 0x8000
+        } else {
+            request.flags
+        };
+
         DhcpPacket {
             op: 2, // BOOTREPLY
             htype: request.htype,
@@ -528,7 +557,7 @@ impl Dhcpv4Server {
             hops: 0,
             xid: request.xid,
             secs: 0,
-            flags: request.flags,
+            flags,
             ciaddr: Ipv4Addr::UNSPECIFIED,
             yiaddr: ip,
             siaddr,
@@ -571,4 +600,35 @@ impl Dhcpv4Server {
     pub fn lease_manager(&self) -> &LeaseManager {
         &self.lease_manager
     }
+}
+
+/// Create a fresh recv socket bound to the given port with SO_REUSEADDR.
+fn bind_recv_socket(port: u16) -> anyhow::Result<UdpSocket> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    sock.set_reuse_address(true)?;
+    sock.set_nonblocking(true)?;
+    sock.bind(&SocketAddr::from(([0, 0, 0, 0], port)).into())?;
+    Ok(UdpSocket::from_std(sock.into())?)
+}
+
+/// Create a one-shot UDP socket, send the data, then let it drop.
+/// Binds to port 67 (DHCP server port) as required by RFC 2131 — relays
+/// expect responses from the server's well-known port.
+/// Uses a 2-second send timeout to prevent blocking the async runtime
+/// if the send stalls (e.g. ARP resolution hangs on RouterOS veths).
+fn send_one_shot(data: &[u8], dest: SocketAddr) -> std::io::Result<usize> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    sock.set_reuse_address(true)?;
+    sock.set_broadcast(true)?;
+    sock.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
+    sock.bind(&SocketAddr::from(([0, 0, 0, 0], 67)).into())?;
+    sock.send_to(data, &dest.into())
 }
