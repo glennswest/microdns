@@ -9,6 +9,7 @@ use microdns_msg::MessageBus;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
@@ -134,10 +135,22 @@ impl Dhcpv4Server {
             // networking bug: any send_to() from inside the container corrupts
             // the veth receive path. Closing and reopening both the recv and
             // send sockets between each transaction resets the veth state.
-            let recv_socket = bind_recv_socket(primary_port)?;
+            let recv_socket = match bind_recv_socket(primary_port) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("DHCP bind failed on port {primary_port}: {e}, retrying in 5s");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
 
             let recv_result = tokio::select! {
                 r = recv_socket.recv_from(&mut buf) => r,
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    info!("DHCP recv timeout, recycling socket");
+                    drop(recv_socket);
+                    continue;
+                }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!("DHCPv4 server shutting down");
