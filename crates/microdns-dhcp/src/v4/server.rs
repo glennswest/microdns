@@ -214,7 +214,7 @@ impl Dhcpv4Server {
 
             let resp_bytes = response.to_bytes();
             // Fresh send socket — created, used once, then dropped
-            debug!("sending DHCP response ({} bytes) to {dest}", resp_bytes.len());
+            info!("sending DHCP response ({} bytes) to {dest}", resp_bytes.len());
             match send_one_shot(&resp_bytes, dest) {
                 Ok(n) => debug!("sent DHCP response to {dest} ({n} bytes)"),
                 Err(e) => error!("failed to send DHCP response to {dest}: {e}"),
@@ -235,7 +235,7 @@ impl Dhcpv4Server {
         };
 
         let mac = request.mac_address();
-        debug!("DHCP {msg_type:?} from {mac} (xid: {:08x})", request.xid);
+        info!("DHCP {msg_type:?} from {mac} (xid: {:08x})", request.xid);
 
         match msg_type {
             DhcpMessageType::Discover => self.handle_discover(request).await,
@@ -263,14 +263,14 @@ impl Dhcpv4Server {
             for pool in pools.iter_mut() {
                 pool.mark_allocated(ip);
             }
-            debug!("offering reserved IP {ip} to {mac}");
+            info!("offering reserved IP {ip} to {mac}");
             return Ok(Some(self.build_offer(request, ip).await));
         }
 
         // Check if client already has a lease
         if let Some(existing) = self.lease_manager.find_lease_by_mac(&mac)? {
             let ip: Ipv4Addr = existing.ip_addr.parse()?;
-            debug!("offering existing lease {ip} to {mac}");
+            info!("offering existing lease {ip} to {mac}");
             return Ok(Some(self.build_offer(request, ip).await));
         }
 
@@ -279,7 +279,7 @@ impl Dhcpv4Server {
             let mut pools = self.pools.lock().await;
             for pool in pools.iter_mut() {
                 if pool.allocate_specific(requested) {
-                    debug!("offering requested IP {requested} to {mac}");
+                    info!("offering requested IP {requested} to {mac}");
                     return Ok(Some(self.build_offer(request, requested).await));
                 }
             }
@@ -289,7 +289,7 @@ impl Dhcpv4Server {
         let mut pools = self.pools.lock().await;
         for pool in pools.iter_mut() {
             if let Some(ip) = pool.allocate() {
-                debug!("offering {ip} to {mac}");
+                info!("offering {ip} to {mac}");
                 return Ok(Some(self.build_offer(request, ip).await));
             }
         }
@@ -521,7 +521,7 @@ impl Dhcpv4Server {
 
             let boot_file = if is_ipxe {
                 if let Some(ref url) = pxe.ipxe_boot_url {
-                    debug!("iPXE client detected, serving boot URL: {}", url);
+                    info!("iPXE client detected, serving boot URL: {}", url);
                     url.as_str()
                 } else {
                     &pxe.boot_file
