@@ -59,7 +59,7 @@ ENV CC_aarch64_unknown_linux_musl=musl-gcc
 ENV CC_x86_64_unknown_linux_musl=musl-gcc
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
-RUN cargo build --release --target $(cat /tmp/rust-target) && \
+RUN CARGO_BUILD_JOBS=2 cargo build --release --target $(cat /tmp/rust-target) && \
     cp /build/target/$(cat /tmp/rust-target)/release/microdns /microdns-bin
 
 # Stage 2: Runtime (scratch)
