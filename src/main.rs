@@ -1,9 +1,12 @@
+mod log_layer;
+
 use anyhow::Result;
 use clap::Parser;
 use microdns_api::ApiServer;
 use microdns_auth::server::AuthServer;
 use microdns_core::config::Config;
 use microdns_core::db::Db;
+use microdns_core::log_buffer::LogBuffer;
 use microdns_core::types::InstanceMode;
 use microdns_federation::heartbeat::HeartbeatTracker;
 use std::net::SocketAddr;
@@ -27,7 +30,7 @@ async fn main() -> Result<()> {
     let config = Config::from_file(&cli.config)?;
 
     // Initialize logging
-    init_logging(&config.logging);
+    let log_buffer = init_logging(&config.logging);
 
     info!(
         instance_id = %config.instance.id,
@@ -356,7 +359,8 @@ async fn main() -> Result<()> {
                 .with_instance_id(&config.instance.id)
                 .with_ipam_pools(ipam_pools)
                 .with_peers(config.instance.peers.clone())
-                .with_dhcp_status(dhcp_status);
+                .with_dhcp_status(dhcp_status)
+                .with_log_buffer(log_buffer.clone());
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());
@@ -417,23 +421,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging(config: &microdns_core::config::LoggingConfig) {
+fn init_logging(config: &microdns_core::config::LoggingConfig) -> Arc<LogBuffer> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&config.level));
 
+    let log_buffer = Arc::new(LogBuffer::new(1000));
+    let buffer_layer = log_layer::LogBufferLayer::new(log_buffer.clone());
+
     match config.format.as_str() {
         "json" => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .json()
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer().json())
+                .with(buffer_layer)
                 .init();
         }
         _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer())
+                .with(buffer_layer)
                 .init();
         }
     }
+
+    log_buffer
 }

@@ -30,8 +30,8 @@ pub async fn api_key_auth(
 
     let path = request.uri().path();
 
-    // Allow unauthenticated access to health check and dashboard
-    if path == "/api/v1/health" || path == "/dashboard" {
+    // Allow unauthenticated access to health check, dashboard, and logs
+    if path == "/api/v1/health" || path == "/dashboard" || path == "/api/v1/logs" {
         return Ok(next.run(request).await);
     }
 

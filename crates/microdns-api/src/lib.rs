@@ -9,6 +9,7 @@ use axum::routing::get;
 use axum::Router;
 use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
+use microdns_core::log_buffer::LogBuffer;
 use microdns_federation::heartbeat::HeartbeatTracker;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
@@ -33,6 +34,7 @@ pub struct ApiServer {
     ipam_pools: Vec<IpamPool>,
     peers: Vec<PeerConfig>,
     dhcp_status: DhcpStatusConfig,
+    log_buffer: Option<Arc<LogBuffer>>,
 }
 
 #[derive(Clone)]
@@ -45,6 +47,7 @@ pub struct AppState {
     pub peers: Vec<PeerConfig>,
     pub ws_connections: Arc<AtomicUsize>,
     pub dhcp_status: DhcpStatusConfig,
+    pub log_buffer: Option<Arc<LogBuffer>>,
 }
 
 impl ApiServer {
@@ -58,6 +61,7 @@ impl ApiServer {
             ipam_pools: Vec::new(),
             peers: Vec::new(),
             dhcp_status: DhcpStatusConfig::default(),
+            log_buffer: None,
         }
     }
 
@@ -86,6 +90,11 @@ impl ApiServer {
         self
     }
 
+    pub fn with_log_buffer(mut self, buffer: Arc<LogBuffer>) -> Self {
+        self.log_buffer = Some(buffer);
+        self
+    }
+
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let state = AppState {
             db: self.db,
@@ -96,6 +105,7 @@ impl ApiServer {
             peers: self.peers,
             ws_connections: Arc::new(AtomicUsize::new(0)),
             dhcp_status: self.dhcp_status,
+            log_buffer: self.log_buffer,
         };
 
         let app = Router::new()
