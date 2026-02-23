@@ -58,6 +58,11 @@ pub fn validate_dns_name(name: &str) -> Result<(), String> {
         return Ok(());
     }
 
+    // Allow bare wildcard "*" (wildcard at zone level)
+    if name == "*" {
+        return Ok(());
+    }
+
     // Allow wildcard prefix
     let check_name = name.strip_prefix("*.").unwrap_or(name);
 
@@ -117,6 +122,7 @@ mod tests {
         assert!(validate_dns_name("example.com").is_ok());
         assert!(validate_dns_name("sub.example.com").is_ok());
         assert!(validate_dns_name("@").is_ok());
+        assert!(validate_dns_name("*").is_ok());
         assert!(validate_dns_name("*.example.com").is_ok());
         assert!(validate_dns_name("a-b.example.com").is_ok());
         assert!(validate_dns_name("www").is_ok());

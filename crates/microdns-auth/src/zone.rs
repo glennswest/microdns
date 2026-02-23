@@ -207,6 +207,12 @@ pub fn resolve_query(db: &Db, qname: &LowerName, qtype: RecordType) -> Vec<DnsRe
                 },
                 _ => continue,
             }
+        } else if record.name.starts_with('*') {
+            // Wildcard match: respond with the queried FQDN, not *.zone
+            match Name::from_str(&ensure_fqdn(fqdn)) {
+                Ok(n) => n,
+                Err(_) => continue,
+            }
         } else {
             match db.find_zone_for_fqdn(fqdn) {
                 Ok(Some(zone)) => {

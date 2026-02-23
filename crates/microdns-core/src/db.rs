@@ -427,6 +427,7 @@ impl Db {
 
     /// Query records across all zones for a given FQDN and record type.
     /// The name is matched against "record.name.zone.name" or "@.zone.name" (zone apex).
+    /// Supports RFC 4592 wildcard matching: if no exact match, tries `*` at each label level.
     pub fn query_fqdn(&self, fqdn: &str, rtype: RecordType) -> Result<Vec<Record>> {
         let fqdn = fqdn.trim_end_matches('.');
         let zones = self.list_zones()?;
@@ -437,7 +438,35 @@ impl Db {
                 // Zone apex query
                 return self.query_records(&zone.id, "@", rtype);
             } else if let Some(prefix) = fqdn.strip_suffix(&format!(".{zone_name}")) {
-                return self.query_records(&zone.id, prefix, rtype);
+                // Try exact match first
+                let exact = self.query_records(&zone.id, prefix, rtype)?;
+                if !exact.is_empty() {
+                    return Ok(exact);
+                }
+
+                // Wildcard fallback: try replacing leading labels with `*`
+                // e.g. for prefix "a.b.c", try "*.b.c", then "*.c", then "*"
+                let mut remaining = prefix;
+                loop {
+                    let wildcard = if let Some(pos) = remaining.find('.') {
+                        format!("*{}", &remaining[pos..])
+                    } else {
+                        "*".to_string()
+                    };
+
+                    let wild_result = self.query_records(&zone.id, &wildcard, rtype)?;
+                    if !wild_result.is_empty() {
+                        return Ok(wild_result);
+                    }
+
+                    // Move up one label
+                    match remaining.find('.') {
+                        Some(pos) => remaining = &remaining[pos + 1..],
+                        None => break,
+                    }
+                }
+
+                return Ok(Vec::new());
             }
         }
 
