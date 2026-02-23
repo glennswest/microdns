@@ -272,10 +272,12 @@ impl Dhcpv4Server {
         if let Some((reserved_ip, _hostname)) = self.reservations.get(&mac) {
             let ip = *reserved_ip;
             // Mark as allocated in pool so it's not given to someone else
-            let mut pools = self.pools.lock().await;
-            for pool in pools.iter_mut() {
-                pool.mark_allocated(ip);
-            }
+            {
+                let mut pools = self.pools.lock().await;
+                for pool in pools.iter_mut() {
+                    pool.mark_allocated(ip);
+                }
+            } // drop lock before build_offer (which also locks pools)
             info!("offering reserved IP {ip} to {mac}");
             return Ok(Some(self.build_offer(request, ip).await));
         }
@@ -289,22 +291,24 @@ impl Dhcpv4Server {
 
         // Try requested IP first
         if let Some(requested) = request.requested_ip() {
-            let mut pools = self.pools.lock().await;
-            for pool in pools.iter_mut() {
-                if pool.allocate_specific(requested) {
-                    info!("offering requested IP {requested} to {mac}");
-                    return Ok(Some(self.build_offer(request, requested).await));
-                }
+            let allocated = {
+                let mut pools = self.pools.lock().await;
+                pools.iter_mut().any(|pool| pool.allocate_specific(requested))
+            }; // drop lock before build_offer
+            if allocated {
+                info!("offering requested IP {requested} to {mac}");
+                return Ok(Some(self.build_offer(request, requested).await));
             }
         }
 
         // Allocate from pool
-        let mut pools = self.pools.lock().await;
-        for pool in pools.iter_mut() {
-            if let Some(ip) = pool.allocate() {
-                info!("offering {ip} to {mac}");
-                return Ok(Some(self.build_offer(request, ip).await));
-            }
+        let allocated_ip = {
+            let mut pools = self.pools.lock().await;
+            pools.iter_mut().find_map(|pool| pool.allocate())
+        }; // drop lock before build_offer
+        if let Some(ip) = allocated_ip {
+            info!("offering {ip} to {mac}");
+            return Ok(Some(self.build_offer(request, ip).await));
         }
 
         warn!("no available IPs for {mac}");
