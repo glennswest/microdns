@@ -117,6 +117,18 @@ async fn create_record(
 
     validate_dns_name(&req.name).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
+    // Dedup: if an identical record (same name + type + data) already exists,
+    // return it instead of creating a duplicate.
+    let existing = state
+        .db
+        .query_records(&zone_id, &req.name, req.data.record_type())
+        .map_err(internal_error)?;
+    for rec in &existing {
+        if rec.data == req.data {
+            return Ok((StatusCode::OK, Json(RecordResponse::from_record(rec.clone()))));
+        }
+    }
+
     let record = Record {
         id: Uuid::new_v4(),
         zone_id,

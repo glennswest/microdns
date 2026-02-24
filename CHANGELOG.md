@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-02-24
+- **fix:** Dedup DNS record creation — when creating a record with identical name, type, and data to an existing record, return the existing record (HTTP 200) instead of creating a duplicate. Prevents accumulation of duplicate entries from repeated mkube reconcile cycles.
+
 ### 2026-02-23
 - **feat:** Add in-memory log ring buffer (1000 entries) with REST endpoint `GET /api/v1/logs?limit=100&level=info&module=dhcp`
 - **feat:** Custom tracing Layer captures all log events into queryable ring buffer
