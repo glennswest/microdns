@@ -2,6 +2,8 @@
 target/
 *.tar.gz
 microdns-arm64
+# Temporary binary copy during podman build
+/microdns
 
 # IDE
 .vscode/
