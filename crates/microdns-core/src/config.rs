@@ -144,6 +144,9 @@ pub struct DhcpV4Pool {
     pub next_server: Option<String>,
     #[serde(default)]
     pub boot_file: Option<String>,
+    /// EFI boot file for UEFI clients (served when DHCP option 93 indicates EFI)
+    #[serde(default)]
+    pub boot_file_efi: Option<String>,
     #[serde(default)]
     pub ipxe_boot_url: Option<String>,
 }

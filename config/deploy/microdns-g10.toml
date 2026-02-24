@@ -49,6 +49,7 @@ domain = "g10.lo"
 lease_time_secs = 600
 next_server = "192.168.10.200"
 boot_file = "undionly.kpxe"
+boot_file_efi = "ipxe.efi"
 
 # Static reservations (14 entries from rose1 dhcp10)
 [[dhcp.v4.reservations]]
@@ -120,6 +121,22 @@ hostname = "server8"
 mac = "F4:52:14:84:AE:30"
 ip = "192.168.10.27"
 hostname = "server8b"
+
+[[dhcp.v4.reservations]]
+mac = "14:18:77:62:5D:0C"
+ip = "192.168.10.30"
+hostname = "server30"
+
+# GPU appliance — 100gig connections
+[[dhcp.v4.reservations]]
+mac = "FC:4C:EA:F9:4F:2F"
+ip = "192.168.10.240"
+hostname = "gb10"
+
+[[dhcp.v4.reservations]]
+mac = "FC:4C:EA:F9:4F:33"
+ip = "192.168.10.241"
+hostname = "gb10b"
 
 [dhcp.dns_registration]
 enabled = true

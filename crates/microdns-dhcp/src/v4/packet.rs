@@ -44,6 +44,7 @@ pub const OPT_PARAMETER_LIST: u8 = 55;
 pub const OPT_TFTP_SERVER: u8 = 66;
 pub const OPT_BOOTFILE: u8 = 67;
 pub const OPT_USER_CLASS: u8 = 77;
+pub const OPT_CLIENT_ARCH: u8 = 93;
 pub const OPT_IPXE_ENCAP: u8 = 175;
 pub const OPT_END: u8 = 255;
 

@@ -19,6 +19,8 @@ use tracing::{debug, error, info, warn};
 struct PxeConfig {
     next_server: Ipv4Addr,
     boot_file: String,
+    /// EFI boot file for UEFI clients (e.g. ipxe.efi)
+    boot_file_efi: Option<String>,
     /// HTTP boot script URL served to iPXE clients instead of the TFTP boot file
     ipxe_boot_url: Option<String>,
 }
@@ -65,6 +67,7 @@ impl Dhcpv4Server {
                 (Some(ns), Some(bf)) => Some(PxeConfig {
                     next_server: ns.parse()?,
                     boot_file: bf.clone(),
+                    boot_file_efi: pool_cfg.boot_file_efi.clone(),
                     ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
                 }),
                 _ => None,
@@ -536,11 +539,33 @@ impl Dhcpv4Server {
                     .map(|d| d.windows(4).any(|w| w == b"iPXE"))
                     .unwrap_or(false);
 
+            // Detect UEFI clients via option 93 (Client System Architecture Type)
+            // Values: 0=BIOS, 6=EFI IA32, 7=EFI x64 (BC), 9=EFI x64, 10=EFI ARM32, 11=EFI ARM64
+            let is_efi = request
+                .get_option(OPT_CLIENT_ARCH)
+                .map(|d| {
+                    if d.len() >= 2 {
+                        let arch = u16::from_be_bytes([d[0], d[1]]);
+                        matches!(arch, 6 | 7 | 9 | 10 | 11)
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+
             let boot_file = if is_ipxe {
                 if let Some(ref url) = pxe.ipxe_boot_url {
                     info!("iPXE client detected, serving boot URL: {}", url);
                     url.as_str()
                 } else {
+                    &pxe.boot_file
+                }
+            } else if is_efi {
+                if let Some(ref efi_file) = pxe.boot_file_efi {
+                    info!("UEFI client detected, serving EFI boot file: {}", efi_file);
+                    efi_file.as_str()
+                } else {
+                    warn!("UEFI client detected but no boot_file_efi configured, falling back to BIOS boot file");
                     &pxe.boot_file
                 }
             } else {
