@@ -27,6 +27,7 @@ const MAX_WS_CONNECTIONS: usize = 100;
 
 pub struct ApiServer {
     listen_addr: SocketAddr,
+    dashboard_addr: Option<SocketAddr>,
     db: Db,
     api_key: Option<String>,
     instance_id: String,
@@ -54,6 +55,7 @@ impl ApiServer {
     pub fn new(listen_addr: SocketAddr, db: Db, api_key: Option<String>) -> Self {
         Self {
             listen_addr,
+            dashboard_addr: None,
             db,
             api_key,
             instance_id: String::new(),
@@ -63,6 +65,11 @@ impl ApiServer {
             dhcp_status: DhcpStatusConfig::default(),
             log_buffer: None,
         }
+    }
+
+    pub fn with_dashboard_addr(mut self, addr: SocketAddr) -> Self {
+        self.dashboard_addr = Some(addr);
+        self
     }
 
     pub fn with_instance_id(mut self, id: &str) -> Self {
@@ -108,26 +115,59 @@ impl ApiServer {
             log_buffer: self.log_buffer,
         };
 
-        let app = Router::new()
+        // API router: /api/v1 routes with body limit + api_key auth
+        let api_app = Router::new()
             .nest("/api/v1", rest::router())
-            .route("/dashboard", get(dashboard::dashboard_page))
-            .route("/ws", get(ws::ws_handler))
             .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 security::api_key_auth,
             ))
-            .with_state(state);
+            .with_state(state.clone());
 
-        let listener = tokio::net::TcpListener::bind(self.listen_addr).await?;
+        let api_listener = tokio::net::TcpListener::bind(self.listen_addr).await?;
         info!("REST API listening on {}", self.listen_addr);
 
-        let mut shutdown = shutdown;
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown.changed().await;
-            })
-            .await?;
+        let mut api_shutdown = shutdown.clone();
+        let api_task = tokio::spawn(async move {
+            axum::serve(api_listener, api_app)
+                .with_graceful_shutdown(async move {
+                    let _ = api_shutdown.changed().await;
+                })
+                .await
+        });
+
+        // Dashboard router: /dashboard + /ws (no api_key auth)
+        let dashboard_task = if let Some(dashboard_addr) = self.dashboard_addr {
+            let dashboard_app = Router::new()
+                .route("/dashboard", get(dashboard::dashboard_page))
+                .route("/ws", get(ws::ws_handler))
+                .with_state(state);
+
+            let dashboard_listener = tokio::net::TcpListener::bind(dashboard_addr).await?;
+            info!("Dashboard listening on {}", dashboard_addr);
+
+            let mut dash_shutdown = shutdown;
+            Some(tokio::spawn(async move {
+                axum::serve(dashboard_listener, dashboard_app)
+                    .with_graceful_shutdown(async move {
+                        let _ = dash_shutdown.changed().await;
+                    })
+                    .await
+            }))
+        } else {
+            None
+        };
+
+        // Wait for both to complete
+        if let Err(e) = api_task.await? {
+            return Err(e.into());
+        }
+        if let Some(task) = dashboard_task {
+            if let Err(e) = task.await? {
+                return Err(e.into());
+            }
+        }
 
         Ok(())
     }

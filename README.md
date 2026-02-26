@@ -20,7 +20,7 @@ Designed for an instance-per-network federated topology where each subnet runs i
 │  └────────────┘  └────────────┘  └────────────────────┘  │
 │  ┌────────────┐  ┌────────────┐  ┌────────────────────┐  │
 │  │ REST API   │  │ gRPC API   │  │ Dashboard + WS     │  │
-│  │ :80        │  │ :50051     │  │ :80/dashboard      │  │
+│  │ :8080      │  │ :50051     │  │ :80/dashboard      │  │
 │  └────────────┘  └────────────┘  └────────────────────┘  │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │              redb (embedded database)               │  │
@@ -159,7 +159,7 @@ mode = "standalone"
 id = "microdns-g10"
 addr = "192.168.10.199"
 dns_port = 53            # default: 53
-http_port = 80           # default: 80
+http_port = 8080         # default: 8080
 
 # Federation coordinator (leaf mode only)
 [coordinator]
@@ -258,7 +258,8 @@ bridge = "bridge-gt"
 
 [api.rest]
 enabled = true
-listen = "0.0.0.0:80"
+listen = "0.0.0.0:8080"
+dashboard_listen = "0.0.0.0:80"
 api_key = "secret"        # optional
 
 [api.grpc]

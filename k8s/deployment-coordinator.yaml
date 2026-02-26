@@ -33,7 +33,10 @@ spec:
             - name: dns-tcp
               containerPort: 53
               protocol: TCP
-            - name: http
+            - name: api
+              containerPort: 8080
+              protocol: TCP
+            - name: dashboard
               containerPort: 80
               protocol: TCP
             - name: grpc
@@ -55,13 +58,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /api/v1/health
-              port: 80
+              port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /api/v1/health
-              port: 80
+              port: 8080
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:

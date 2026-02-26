@@ -355,12 +355,15 @@ async fn main() -> Result<()> {
                 microdns_api::DhcpStatusConfig::default()
             };
 
+            let dashboard_addr: SocketAddr = rest_config.dashboard_listen.parse()?;
+
             let mut api = ApiServer::new(addr, db.clone(), rest_config.api_key.clone())
                 .with_instance_id(&config.instance.id)
                 .with_ipam_pools(ipam_pools)
                 .with_peers(config.instance.peers.clone())
                 .with_dhcp_status(dhcp_status)
-                .with_log_buffer(log_buffer.clone());
+                .with_log_buffer(log_buffer.clone())
+                .with_dashboard_addr(dashboard_addr);
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());

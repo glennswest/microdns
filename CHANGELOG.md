@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 ### 2026-02-26
-- **feat:** Change REST API + dashboard default port from 8080 to 80
+- **feat:** Split REST API and dashboard onto separate ports — API on :8080, dashboard on :80
+- **feat:** Add `dashboard_listen` config option to `[api.rest]` section
 
 ### 2026-02-24
 - **chore:** Add build.sh/deploy.sh for podman scratch container build + push to local registry (matches ipmiserial pattern)

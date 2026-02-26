@@ -232,6 +232,8 @@ pub struct RestApiConfig {
     pub enabled: bool,
     #[serde(default = "default_rest_listen")]
     pub listen: String,
+    #[serde(default = "default_dashboard_listen")]
+    pub dashboard_listen: String,
     #[serde(default)]
     pub api_key: Option<String>,
 }
@@ -241,6 +243,7 @@ impl Default for RestApiConfig {
         Self {
             enabled: true,
             listen: default_rest_listen(),
+            dashboard_listen: default_dashboard_listen(),
             api_key: None,
         }
     }
@@ -326,6 +329,9 @@ fn default_recursor_listen() -> String {
     "0.0.0.0:5353".to_string()
 }
 fn default_rest_listen() -> String {
+    "0.0.0.0:8080".to_string()
+}
+fn default_dashboard_listen() -> String {
     "0.0.0.0:80".to_string()
 }
 fn default_grpc_listen() -> String {
@@ -368,7 +374,7 @@ fn default_peer_dns_port() -> u16 {
     53
 }
 fn default_peer_http_port() -> u16 {
-    80
+    8080
 }
 fn default_peer_grpc_port() -> u16 {
     50051
@@ -452,7 +458,8 @@ default_probe = "ping"
 
 [api.rest]
 enabled = true
-listen = "0.0.0.0:80"
+listen = "0.0.0.0:8080"
+dashboard_listen = "0.0.0.0:80"
 api_key = "secret"
 
 [api.grpc]
@@ -503,7 +510,7 @@ format = "text"
         assert_eq!(config.instance.peers[0].id, "test-g10");
         assert_eq!(config.instance.peers[0].addr, "192.168.10.199");
         assert_eq!(config.instance.peers[0].dns_port, 53); // default
-        assert_eq!(config.instance.peers[0].http_port, 80); // default
+        assert_eq!(config.instance.peers[0].http_port, 8080); // default
         assert_eq!(config.instance.peers[1].dns_port, 5353); // custom
         assert_eq!(config.instance.peers[1].http_port, 9090); // custom
     }
