@@ -318,7 +318,7 @@ bridge = "bridge-lan"
 
 [api.rest]
 enabled = true
-listen = "0.0.0.0:8080"
+listen = "0.0.0.0:80"
 
 [api.grpc]
 enabled = true

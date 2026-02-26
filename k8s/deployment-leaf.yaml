@@ -45,7 +45,7 @@ spec:
               protocol: UDP
               hostPort: 547
             - name: http
-              containerPort: 8080
+              containerPort: 80
               protocol: TCP
             - name: grpc
               containerPort: 50051
@@ -76,13 +76,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /api/v1/health
-              port: 8080
+              port: 80
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /api/v1/health
-              port: 8080
+              port: 80
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:

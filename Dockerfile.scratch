@@ -2,6 +2,6 @@ FROM scratch
 COPY microdns /microdns
 COPY config/microdns.toml /etc/microdns/microdns.toml
 VOLUME ["/data"]
-EXPOSE 53/udp 53/tcp 67/udp 8080/tcp 50051/tcp
+EXPOSE 53/udp 53/tcp 67/udp 80/tcp 50051/tcp
 ENTRYPOINT ["/microdns"]
 CMD ["--config", "/etc/microdns/microdns.toml"]

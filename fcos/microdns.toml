@@ -16,7 +16,7 @@ cache_size = 10000
 
 [api.rest]
 enabled = true
-listen = "0.0.0.0:8080"
+listen = "0.0.0.0:80"
 # api_key = "change-me-in-production"
 
 [database]

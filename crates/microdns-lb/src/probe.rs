@@ -88,7 +88,7 @@ async fn http_probe(
     endpoint: Option<&str>,
 ) -> Result<String, String> {
     let scheme = if https { "https" } else { "http" };
-    // Parse endpoint for port if provided (e.g., ":8080/health")
+    // Parse endpoint for port if provided (e.g., ":80/health")
     let (port_str, actual_path) = if let Some(ep) = endpoint {
         if let Some(rest) = ep.strip_prefix(':') {
             if let Some(slash_pos) = rest.find('/') {

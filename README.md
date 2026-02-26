@@ -20,7 +20,7 @@ Designed for an instance-per-network federated topology where each subnet runs i
 │  └────────────┘  └────────────┘  └────────────────────┘  │
 │  ┌────────────┐  ┌────────────┐  ┌────────────────────┐  │
 │  │ REST API   │  │ gRPC API   │  │ Dashboard + WS     │  │
-│  │ :8080      │  │ :50051     │  │ :8080/dashboard    │  │
+│  │ :80        │  │ :50051     │  │ :80/dashboard      │  │
 │  └────────────┘  └────────────┘  └────────────────────┘  │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │              redb (embedded database)               │  │
@@ -123,7 +123,7 @@ microdns --config /etc/microdns/microdns.toml
 | 5353 | UDP/TCP | DNS (recursor, when auth uses 53) |
 | 67 | UDP | DHCPv4 |
 | 547 | UDP | DHCPv6 |
-| 8080 | TCP | REST API + Dashboard |
+| 80 | TCP | REST API + Dashboard |
 | 50051 | TCP | gRPC API |
 
 ## Configuration
@@ -159,7 +159,7 @@ mode = "standalone"
 id = "microdns-g10"
 addr = "192.168.10.199"
 dns_port = 53            # default: 53
-http_port = 8080         # default: 8080
+http_port = 80           # default: 80
 
 # Federation coordinator (leaf mode only)
 [coordinator]
@@ -258,7 +258,7 @@ bridge = "bridge-gt"
 
 [api.rest]
 enabled = true
-listen = "0.0.0.0:8080"
+listen = "0.0.0.0:80"
 api_key = "secret"        # optional
 
 [api.grpc]
@@ -336,7 +336,7 @@ Create record with health check:
     "timeout_secs": 5,
     "unhealthy_threshold": 3,
     "healthy_threshold": 2,
-    "endpoint": ":8080/health"
+    "endpoint": ":80/health"
   }
 }
 ```
@@ -439,9 +439,9 @@ Records with `health_check` config are monitored by the health monitor. Probe ty
 | Probe | Description | Endpoint Format |
 |-------|-------------|-----------------|
 | `ping` | TCP connect to port 80/443 | — |
-| `http` | HTTP GET, expects 2xx | `:8080/health` |
+| `http` | HTTP GET, expects 2xx | `:80/health` |
 | `https` | HTTPS GET, expects 2xx | `:443/health` |
-| `tcp` | TCP connect test | `:8080` |
+| `tcp` | TCP connect test | `:80` |
 
 Unhealthy records are automatically excluded from DNS responses. The state machine uses configurable thresholds to prevent flapping.
 
@@ -474,7 +474,7 @@ scripts/setup-rose1.sh redeploy
 
 ```bash
 scripts/import-zones.sh \
-  --target http://192.168.1.199:8080 \
+  --target http://192.168.1.199 \
   --pdns-key "your-api-key" \
   --zones "gw.lo,g10.lo,1.168.192.in-addr.arpa"
 ```

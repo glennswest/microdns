@@ -56,7 +56,7 @@ ssh core@<host> journalctl -u microdns -f
 dig @<host> example.com
 
 # Test API
-curl http://<host>:8080/api/v1/zones
+curl http://<host>/api/v1/zones
 ```
 
 ## Manual Setup (Existing FCOS)
@@ -110,7 +110,7 @@ ssh core@<host> sudo systemctl enable --now microdns
 | 5353 | UDP/TCP | Recursive DNS |
 | 67 | UDP | DHCPv4 |
 | 547 | UDP | DHCPv6 |
-| 8080 | TCP | REST API |
+| 80 | TCP | REST API |
 | 50051 | TCP | gRPC |
 
 ## Updating

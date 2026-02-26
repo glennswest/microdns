@@ -127,6 +127,11 @@ mac = "14:18:77:62:5D:0C"
 ip = "192.168.10.30"
 hostname = "server30"
 
+[[dhcp.v4.reservations]]
+mac = "50:6B:4B:B1:9E:26"
+ip = "192.168.10.31"
+hostname = "server30b"
+
 # GPU appliance — 100gig connections
 [[dhcp.v4.reservations]]
 mac = "FC:4C:EA:F9:4F:2F"
@@ -158,7 +163,7 @@ bridge = "bridge"
 
 [api.rest]
 enabled = true
-listen = "0.0.0.0:8080"
+listen = "0.0.0.0:80"
 
 [api.grpc]
 enabled = true

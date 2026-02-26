@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Import zones from PowerDNS to MicroDNS
-# Usage: ./import-zones.sh --target http://192.168.1.51:8080 --zones "gw.lo,apps.gw.lo"
+# Usage: ./import-zones.sh --target http://192.168.1.51 --zones "gw.lo,apps.gw.lo"
 # Requires: curl, python3
 
 PDNS_API="http://dnsx.gw.lo:8081"
@@ -21,7 +21,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$TARGET" || -z "$ZONES" ]]; then
-    echo "Usage: $0 --target http://host:8080 --zones \"zone1,zone2\""
+    echo "Usage: $0 --target http://host --zones \"zone1,zone2\""
     exit 1
 fi
 
