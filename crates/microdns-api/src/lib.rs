@@ -5,6 +5,7 @@ pub mod security;
 pub mod ws;
 
 use axum::extract::DefaultBodyLimit;
+use axum::response::Redirect;
 use axum::routing::get;
 use axum::Router;
 use microdns_core::config::{IpamPool, PeerConfig};
@@ -140,6 +141,7 @@ impl ApiServer {
         // Dashboard router: /dashboard + /ws (no api_key auth)
         let dashboard_task = if let Some(dashboard_addr) = self.dashboard_addr {
             let dashboard_app = Router::new()
+                .route("/", get(|| async { Redirect::permanent("/dashboard") }))
                 .route("/dashboard", get(dashboard::dashboard_page))
                 .route("/ws", get(ws::ws_handler))
                 .with_state(state);
