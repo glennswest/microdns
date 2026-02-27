@@ -5,7 +5,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-IMAGE="microdns:latest"
+REGISTRY="registry.gt.lo:5000"
+IMAGE="$REGISTRY/microdns:edge"
 
 echo "=== Building microdns ==="
 
