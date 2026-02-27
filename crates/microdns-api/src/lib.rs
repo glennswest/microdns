@@ -8,6 +8,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::response::Redirect;
 use axum::routing::get;
 use axum::Router;
+use tower_http::cors::{Any, CorsLayer};
 use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
@@ -116,7 +117,7 @@ impl ApiServer {
             log_buffer: self.log_buffer,
         };
 
-        // API router: /api/v1 routes with body limit + api_key auth
+        // API router: /api/v1 routes with body limit + api_key auth + CORS
         let api_app = Router::new()
             .nest("/api/v1", rest::router())
             .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
@@ -124,6 +125,12 @@ impl ApiServer {
                 state.clone(),
                 security::api_key_auth,
             ))
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any),
+            )
             .with_state(state.clone());
 
         let api_listener = tokio::net::TcpListener::bind(self.listen_addr).await?;

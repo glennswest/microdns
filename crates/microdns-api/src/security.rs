@@ -28,10 +28,8 @@ pub async fn api_key_auth(
         None => return Ok(next.run(request).await),
     };
 
-    let path = request.uri().path();
-
-    // Allow unauthenticated access to health check and logs
-    if path == "/api/v1/health" || path == "/api/v1/logs" {
+    // Allow all GET requests without auth (read-only); mutations still require key
+    if request.method() == axum::http::Method::GET {
         return Ok(next.run(request).await);
     }
 

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 2026-02-27
+- **feat:** Full management dashboard — 5-tab SPA (Overview, DNS, DHCP, Logs, Peers)
+- **feat:** DNS CRUD — create/delete zones, create/edit/delete records (all 9 types) with inline editing
+- **feat:** DHCP tab — pool config, active leases with search/filter
+- **feat:** Logs tab — filtered log viewer with level/module dropdowns and auto-refresh
+- **feat:** Peers tab — connectivity probe cards with latency display
+- **feat:** CORS on API router — allows dashboard on :80 to fetch from API on :8080
+- **feat:** Skip API key for GET requests — read-only access without authentication
+
 ### 2026-02-26
 - **feat:** Split REST API and dashboard onto separate ports — API on :8080, dashboard on :80
 - **feat:** Add `dashboard_listen` config option to `[api.rest]` section
