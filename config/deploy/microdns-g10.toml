@@ -50,6 +50,7 @@ lease_time_secs = 600
 next_server = "192.168.10.200"
 boot_file = "undionly.kpxe"
 boot_file_efi = "ipxe.efi"
+ipxe_boot_url = "http://192.168.10.200/boot.ipxe"
 
 # Static reservations (14 entries from rose1 dhcp10)
 [[dhcp.v4.reservations]]
