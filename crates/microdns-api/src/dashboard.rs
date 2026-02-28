@@ -124,6 +124,7 @@ input::placeholder{color:#475569}
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('dns')">DNS</div>
+  <div class="tab" onclick="switchTab('lb')">Load Balancer</div>
   <div class="tab" onclick="switchTab('dhcp')">DHCP</div>
   <div class="tab" onclick="switchTab('logs')">Logs</div>
   <div class="tab" onclick="switchTab('peers')">Peers</div>
@@ -193,6 +194,31 @@ input::placeholder{color:#475569}
         <div class="empty-state">Select a zone to view records</div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- LOAD BALANCER TAB -->
+<div class="content" id="tab-lb">
+  <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <h2 style="font-size:14px;color:#94a3b8">Health-Checked Records</h2>
+    <button class="btn btn-ghost btn-sm" onclick="loadLB()">Refresh</button>
+  </div>
+  <div class="grid" id="lb-summary" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+    <div class="card stat"><div class="value" id="lb-total">-</div><div class="label">Health-Checked</div></div>
+    <div class="card stat"><div class="value" id="lb-healthy" style="color:#22c55e">-</div><div class="label">Healthy</div></div>
+    <div class="card stat"><div class="value" id="lb-unhealthy" style="color:#ef4444">-</div><div class="label">Unhealthy</div></div>
+    <div class="card stat"><div class="value" id="lb-groups">-</div><div class="label">Failover Groups</div></div>
+  </div>
+  <div class="card" id="lb-groups-card" style="display:none;margin-bottom:16px">
+    <h2>Failover Groups</h2>
+    <div id="lb-groups-body"></div>
+  </div>
+  <div class="card">
+    <h2>All Health-Checked Records</h2>
+    <table>
+      <thead><tr><th>Zone</th><th>Name</th><th>Type</th><th>Target</th><th>Probe</th><th>Interval</th><th>Thresholds</th><th>Status</th></tr></thead>
+      <tbody id="lb-records-table"></tbody>
+    </table>
   </div>
 </div>
 
@@ -330,7 +356,7 @@ function doConfirm() { if(confirmCb) confirmCb(); closeConfirm(); }
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const tabs = ['overview','dns','dhcp','logs','peers'];
+    const tabs = ['overview','dns','lb','dhcp','logs','peers'];
     t.classList.toggle('active', tabs[i] === name);
   });
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
@@ -344,6 +370,7 @@ function switchTab(name) {
   switch(name) {
     case 'overview': startOverview(); break;
     case 'dns': break; // uses WS data for zone list
+    case 'lb': loadLB(); intervals.lb = setInterval(loadLB, 10000); break;
     case 'dhcp': loadDhcp(); intervals.dhcp = setInterval(loadDhcp, 5000); break;
     case 'logs': loadLogs(); if(document.getElementById('log-auto').checked) intervals.logs = setInterval(loadLogs, 3000); break;
     case 'peers': loadPeers(); intervals.peers = setInterval(loadPeers, 10000); break;
@@ -658,6 +685,83 @@ async function saveEditRecord(id, type) {
     await apiPut(`/zones/${selectedZoneId}/records/${id}`, {name, ttl, data, enabled});
     await loadRecords();
   } catch(e) { alert('Failed: ' + e.message); }
+}
+
+// ─── Load Balancer Tab ───
+
+async function loadLB() {
+  try {
+    // Fetch records from all zones known via WS
+    const zones = wsData.zones || [];
+    const allRecs = [];
+    await Promise.all(zones.map(async z => {
+      try {
+        const recs = await apiFetch(`/zones/${z.id}/records?limit=500`);
+        recs.forEach(r => { r._zoneName = z.name; r._zoneId = z.id; });
+        allRecs.push(...recs);
+      } catch(e) {}
+    }));
+
+    // Filter to only records with health_check configured
+    const hcRecs = allRecs.filter(r => r.health_check);
+    const healthy = hcRecs.filter(r => r.enabled).length;
+    const unhealthy = hcRecs.length - healthy;
+
+    // Build failover groups: records sharing same (zone_id, name, type)
+    const groupMap = {};
+    hcRecs.forEach(r => {
+      const key = `${r._zoneId}|${r.name}|${r.type}`;
+      if (!groupMap[key]) groupMap[key] = {zone:r._zoneName, name:r.name, type:r.type, records:[]};
+      groupMap[key].records.push(r);
+    });
+    const groups = Object.values(groupMap).filter(g => g.records.length >= 2);
+
+    // Stats
+    document.getElementById('lb-total').textContent = hcRecs.length;
+    document.getElementById('lb-healthy').textContent = healthy;
+    document.getElementById('lb-unhealthy').textContent = unhealthy;
+    document.getElementById('lb-groups').textContent = groups.length;
+
+    // Failover groups
+    if (groups.length > 0) {
+      document.getElementById('lb-groups-card').style.display = '';
+      document.getElementById('lb-groups-body').innerHTML = groups.map(g => {
+        const allDown = g.records.every(r => !r.enabled);
+        return `<div style="margin-bottom:12px;padding:10px;background:#0f172a;border-radius:6px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-weight:500">${esc(g.name)}.${esc(g.zone)}</span>
+            <span class="badge active">${esc(g.type)}</span>
+            ${allDown ? '<span class="badge err">FAILSAFE</span>' : ''}
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">${g.records.map(r =>
+            `<div style="display:flex;align-items:center;gap:6px;font-size:12px">
+              <span class="dot ${r.enabled?'green':'red'}"></span>
+              <span style="font-family:monospace">${esc(fmtRecordData(r.data))}</span>
+            </div>`
+          ).join('')}</div>
+        </div>`;
+      }).join('');
+    } else {
+      document.getElementById('lb-groups-card').style.display = 'none';
+    }
+
+    // All records table
+    document.getElementById('lb-records-table').innerHTML = hcRecs.map(r => {
+      const hc = r.health_check;
+      return `<tr>
+        <td>${esc(r._zoneName)}</td>
+        <td>${esc(r.name)}</td>
+        <td><span class="badge active">${esc(r.type)}</span></td>
+        <td style="font-family:monospace;font-size:12px">${esc(fmtRecordData(r.data))}</td>
+        <td>${esc(hc.probe_type)}</td>
+        <td>${hc.interval_secs}s</td>
+        <td style="font-size:11px;color:#94a3b8">${hc.healthy_threshold}/${hc.unhealthy_threshold}</td>
+        <td><span class="badge ${r.enabled?'ok':'err'}">${r.enabled?'Healthy':'Down'}</span></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="8" style="color:#64748b">No health-checked records configured</td></tr>';
+  } catch(e) {
+    document.getElementById('lb-records-table').innerHTML = `<tr><td colspan="8" style="color:#64748b">Error: ${esc(e.message)}</td></tr>`;
+  }
 }
 
 // ─── DHCP Tab ───

@@ -10,6 +10,7 @@
 - **feat:** Peers tab — connectivity probe cards with latency display
 - **feat:** CORS on API router — allows dashboard on :80 to fetch from API on :8080
 - **feat:** Skip API key for GET requests — read-only access without authentication
+- **feat:** Load Balancer tab — aggregates health-checked records across all zones, shows healthy/unhealthy counts, failover groups with failsafe detection
 
 ### 2026-02-26
 - **feat:** Split REST API and dashboard onto separate ports — API on :8080, dashboard on :80
