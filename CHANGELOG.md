@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-02-28
+- **feat:** x86_64-unknown-linux-musl cross-compile support (`.cargo/config.toml` linker config)
+- **feat:** `deploy_mdns_gw.sh` — deploy script for mdns.gw.lo (192.168.1.52, Alpine/OpenRC)
+
 ### 2026-02-27
 - **feat:** Full management dashboard — 5-tab SPA (Overview, DNS, DHCP, Logs, Peers)
 - **feat:** DNS CRUD — create/delete zones, create/edit/delete records (all 9 types) with inline editing
