@@ -1,0 +1,56 @@
+# Cross-compile microdns from ARM64 to x86_64-unknown-linux-musl
+# Runs natively on ARM64 — no QEMU emulation needed
+
+FROM rust:1.88-bookworm AS builder
+
+# Install protobuf compiler and x86_64 cross-compilation tools
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    gcc-x86-64-linux-gnu \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add the x86_64 musl target
+RUN rustup target add x86_64-unknown-linux-musl
+
+WORKDIR /build
+
+# Copy manifests first for dependency caching
+COPY Cargo.toml Cargo.lock ./
+COPY crates/microdns-core/Cargo.toml crates/microdns-core/
+COPY crates/microdns-auth/Cargo.toml crates/microdns-auth/
+COPY crates/microdns-api/Cargo.toml crates/microdns-api/
+COPY crates/microdns-recursor/Cargo.toml crates/microdns-recursor/
+COPY crates/microdns-lb/Cargo.toml crates/microdns-lb/
+COPY crates/microdns-dhcp/Cargo.toml crates/microdns-dhcp/
+COPY crates/microdns-msg/Cargo.toml crates/microdns-msg/
+COPY crates/microdns-federation/Cargo.toml crates/microdns-federation/
+
+# Create dummy source files for dependency compilation
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
+    for crate in microdns-core microdns-auth microdns-api microdns-recursor microdns-lb microdns-dhcp microdns-msg microdns-federation; do \
+        mkdir -p crates/$crate/src && echo '' > crates/$crate/src/lib.rs; \
+    done
+
+# Copy build scripts and proto file
+COPY crates/microdns-api/build.rs crates/microdns-api/
+COPY crates/microdns-federation/build.rs crates/microdns-federation/
+COPY proto/ proto/
+
+# Build dependencies only (cached layer)
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc
+ENV CC_x86_64_unknown_linux_musl=x86_64-linux-gnu-gcc
+RUN cargo build --release --target x86_64-unknown-linux-musl 2>/dev/null || true
+
+# Copy actual source code
+COPY . .
+RUN find . -name "*.rs" -exec touch {} +
+
+# Build release binary
+RUN CARGO_BUILD_JOBS=2 cargo build --release --target x86_64-unknown-linux-musl && \
+    cp /build/target/x86_64-unknown-linux-musl/release/microdns /microdns-bin
+
+# Stage 2: Just extract the binary
+FROM scratch
+COPY --from=builder /microdns-bin /microdns
