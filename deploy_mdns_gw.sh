@@ -11,6 +11,10 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
+STRIP="/opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-strip"
+echo "Stripping binary..."
+$STRIP "$BINARY"
+
 SIZE=$(du -h "$BINARY" | cut -f1)
 echo "Deploying microdns ($SIZE) to $TARGET_HOST..."
 
