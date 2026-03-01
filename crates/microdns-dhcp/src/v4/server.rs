@@ -161,10 +161,17 @@ impl Dhcpv4Server {
         socket.set_broadcast(true)?;
 
         let mut buf = vec![0u8; 1500];
+        let mut pool_sync = tokio::time::interval(Duration::from_secs(60));
 
         loop {
             let recv_result = tokio::select! {
                 r = socket.recv_from(&mut buf) => r,
+                _ = pool_sync.tick() => {
+                    if let Err(e) = self.sync_pool().await {
+                        warn!("pool sync error: {e}");
+                    }
+                    continue;
+                }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!("DHCPv4 server shutting down");
@@ -232,6 +239,7 @@ impl Dhcpv4Server {
     ) -> anyhow::Result<()> {
         let mut buf = vec![0u8; 1500];
         let mut last_relay_packet = tokio::time::Instant::now();
+        let mut pool_sync = tokio::time::interval(Duration::from_secs(60));
 
         'outer: loop {
             let recv_socket = match bind_recv_socket(port) {
@@ -248,6 +256,12 @@ impl Dhcpv4Server {
 
                 let recv_result = tokio::select! {
                     r = recv_socket.recv_from(&mut buf) => r,
+                    _ = pool_sync.tick() => {
+                        if let Err(e) = self.sync_pool().await {
+                            warn!("pool sync error: {e}");
+                        }
+                        continue;
+                    }
                     _ = tokio::time::sleep_until(deadline) => {
                         info!("DHCP deadman: no relay packets for 30s, recycling socket");
                         drop(recv_socket);
@@ -730,6 +744,43 @@ impl Dhcpv4Server {
             "restored {} active leases, {} reservations",
             leases.len(),
             self.reservations.len()
+        );
+        Ok(())
+    }
+
+    /// Re-synchronise the pool's in-memory allocated set with the database.
+    /// This frees IPs from expired/released leases that were never explicitly
+    /// released by the client (most clients skip DHCP Release).
+    async fn sync_pool(&self) -> anyhow::Result<()> {
+        let active_leases = self.lease_manager.list_active_leases()?;
+        let mut pools = self.pools.lock().await;
+
+        for pool in pools.iter_mut() {
+            pool.clear_allocated();
+        }
+
+        // Re-mark active leases
+        for lease in &active_leases {
+            if let Ok(ip) = lease.ip_addr.parse::<Ipv4Addr>() {
+                for pool in pools.iter_mut() {
+                    pool.mark_allocated(ip);
+                }
+            }
+        }
+
+        // Re-mark reservations (must never be handed out to other clients)
+        for (_mac, (ip, _hostname)) in &self.reservations {
+            for pool in pools.iter_mut() {
+                pool.mark_allocated(*ip);
+            }
+        }
+
+        let avail: u32 = pools.iter().map(|p| p.available_count()).sum();
+        debug!(
+            "pool sync: {} active leases, {} reservations, {} available",
+            active_leases.len(),
+            self.reservations.len(),
+            avail
         );
         Ok(())
     }

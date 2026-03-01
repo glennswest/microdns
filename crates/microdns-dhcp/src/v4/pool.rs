@@ -84,6 +84,11 @@ impl Ipv4Pool {
         }
     }
 
+    /// Clear all allocations (used before pool re-sync).
+    pub fn clear_allocated(&mut self) {
+        self.allocated.clear();
+    }
+
     pub fn available_count(&self) -> u32 {
         let start: u32 = self.range_start.into();
         let end: u32 = self.range_end.into();
