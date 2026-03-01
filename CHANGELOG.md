@@ -5,6 +5,13 @@
 ### 2026-02-28
 - **feat:** x86_64-unknown-linux-musl cross-compile support (`.cargo/config.toml` linker config)
 - **feat:** `deploy_mdns_gw.sh` — deploy script for mdns.gw.lo (192.168.1.52, Alpine/OpenRC)
+- **feat:** Full DNS sync to mdns.gw.lo — all PowerDNS + MikroTik DHCP records synced, duplicates cleaned, reverse DNS rebuilt
+- **feat:** `sync_mdns_gw.py` — comprehensive sync script (PowerDNS import, MikroTik DHCP, dedup, reverse DNS rebuild)
+- **feat:** Forward zones for g10.lo, g11.lo, gt.lo on mdns.gw.lo (non-auth forwarding)
+- **fix:** `dns.gw.lo` now points to 192.168.1.52 (mdns) instead of stale 192.168.1.154
+- **fix:** MikroTik router upstream DNS changed from dnsx (192.168.1.51) to mdns (192.168.1.52)
+- **fix:** Removed duplicate zones (s1.lo x2, g10.lo x2, g11.lo x2, reverse zones x2)
+- **fix:** Cleaned 28 duplicate records in gw.lo, 27 in s1.lo
 
 ### 2026-02-27
 - **feat:** Full management dashboard — 5-tab SPA (Overview, DNS, DHCP, Logs, Peers)
