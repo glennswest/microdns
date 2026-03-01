@@ -39,7 +39,76 @@ impl LeaseManager {
         pool_id: &str,
     ) -> Result<Lease> {
         let now = Utc::now();
-        let lease = Lease {
+        let write_txn = self.db.raw().begin_write()?;
+
+        let lease;
+        {
+            let mut leases = write_txn.open_table(LEASES_TABLE)?;
+            let mut mac_idx = write_txn.open_table(MAC_LEASE_INDEX)?;
+            let mut ip_idx = write_txn.open_table(IP_LEASE_INDEX)?;
+
+            // Check for existing lease by MAC — upsert instead of creating orphans
+            let existing_id = mac_idx
+                .get(mac_addr)?
+                .map(|v| v.value().to_string());
+
+            if let Some(ref old_id) = existing_id {
+                if let Some(old_json) = leases.get(old_id.as_str())? {
+                    let old_lease: Lease = serde_json::from_str(old_json.value())?;
+                    // Update existing lease in place
+                    let updated = Lease {
+                        id: old_lease.id,
+                        ip_addr: ip_addr.to_string(),
+                        mac_addr: mac_addr.to_string(),
+                        hostname: hostname.map(String::from),
+                        lease_start: now,
+                        lease_end: now + chrono::Duration::seconds(lease_time_secs as i64),
+                        pool_id: pool_id.to_string(),
+                        state: LeaseState::Active,
+                    };
+                    let json = serde_json::to_string(&updated)?;
+                    leases.insert(old_id.as_str(), json.as_str())?;
+
+                    // Update IP index if IP changed
+                    if old_lease.ip_addr != ip_addr {
+                        ip_idx.remove(old_lease.ip_addr.as_str())?;
+                        ip_idx.insert(ip_addr, old_id.as_str())?;
+                    }
+
+                    lease = updated;
+                } else {
+                    // Index points to missing entry — clean up and create fresh
+                    lease = Self::new_lease(now, ip_addr, mac_addr, hostname, lease_time_secs, pool_id);
+                    let id_str = lease.id.to_string();
+                    let json = serde_json::to_string(&lease)?;
+                    leases.insert(id_str.as_str(), json.as_str())?;
+                    mac_idx.insert(mac_addr, id_str.as_str())?;
+                    ip_idx.insert(ip_addr, id_str.as_str())?;
+                }
+            } else {
+                // No existing lease for this MAC — create new
+                lease = Self::new_lease(now, ip_addr, mac_addr, hostname, lease_time_secs, pool_id);
+                let id_str = lease.id.to_string();
+                let json = serde_json::to_string(&lease)?;
+                leases.insert(id_str.as_str(), json.as_str())?;
+                mac_idx.insert(mac_addr, id_str.as_str())?;
+                ip_idx.insert(ip_addr, id_str.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+
+        Ok(lease)
+    }
+
+    fn new_lease(
+        now: chrono::DateTime<Utc>,
+        ip_addr: &str,
+        mac_addr: &str,
+        hostname: Option<&str>,
+        lease_time_secs: u32,
+        pool_id: &str,
+    ) -> Lease {
+        Lease {
             id: Uuid::new_v4(),
             ip_addr: ip_addr.to_string(),
             mac_addr: mac_addr.to_string(),
@@ -48,25 +117,7 @@ impl LeaseManager {
             lease_end: now + chrono::Duration::seconds(lease_time_secs as i64),
             pool_id: pool_id.to_string(),
             state: LeaseState::Active,
-        };
-
-        let write_txn = self.db.raw().begin_write()?;
-        {
-            let id_str = lease.id.to_string();
-            let json = serde_json::to_string(&lease)?;
-
-            let mut leases = write_txn.open_table(LEASES_TABLE)?;
-            leases.insert(id_str.as_str(), json.as_str())?;
-
-            let mut mac_idx = write_txn.open_table(MAC_LEASE_INDEX)?;
-            mac_idx.insert(mac_addr, id_str.as_str())?;
-
-            let mut ip_idx = write_txn.open_table(IP_LEASE_INDEX)?;
-            ip_idx.insert(ip_addr, id_str.as_str())?;
         }
-        write_txn.commit()?;
-
-        Ok(lease)
     }
 
     pub fn find_lease_by_mac(&self, mac_addr: &str) -> Result<Option<Lease>> {
