@@ -210,14 +210,18 @@ impl Dhcpv4Server {
                 }
             };
 
+            // Determine response destination.  When the client has no IP
+            // yet (ciaddr==0) we MUST broadcast — unicast to yiaddr fails
+            // because ARP resolution for an IP the client doesn't have yet
+            // is dropped by the network stack.
             let dest = if packet.giaddr != Ipv4Addr::UNSPECIFIED {
                 SocketAddr::new(packet.giaddr.into(), 67)
-            } else if packet.flags & 0x8000 != 0 {
+            } else if packet.ciaddr == Ipv4Addr::UNSPECIFIED
+                || packet.flags & 0x8000 != 0
+            {
                 SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
-            } else if response.yiaddr != Ipv4Addr::UNSPECIFIED {
-                SocketAddr::new(response.yiaddr.into(), 68)
             } else {
-                SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
+                SocketAddr::new(packet.ciaddr.into(), 68)
             };
 
             let resp_bytes = response.to_bytes();

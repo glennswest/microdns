@@ -90,7 +90,7 @@ hostname = "workmac"
 
 [[dhcp.v4.reservations]]
 mac = "08:55:31:DB:0F:E1"
-ip = "192.168.1.14"
+ip = "192.168.1.254"
 hostname = "cap01"
 
 [[dhcp.v4.reservations]]
@@ -225,7 +225,7 @@ hostname = "ting"
 
 [[dhcp.v4.reservations]]
 mac = "18:FD:74:13:56:60"
-ip = "192.168.1.4"
+ip = "192.168.1.253"
 hostname = "cap02"
 
 [[dhcp.v4.reservations]]
