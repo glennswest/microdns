@@ -324,11 +324,12 @@ impl LeaseManager {
             for (id, _mac, ip) in &orphans {
                 leases.remove(id.as_str())?;
                 // Clean stale IP index entries pointing to this orphan
-                if let Some(v) = ip_idx.get(ip.as_str())? {
-                    if v.value() == id.as_str() {
-                        drop(v);
-                        ip_idx.remove(ip.as_str())?;
-                    }
+                let ip_points_to_orphan = ip_idx
+                    .get(ip.as_str())?
+                    .map(|v| v.value() == id.as_str())
+                    .unwrap_or(false);
+                if ip_points_to_orphan {
+                    ip_idx.remove(ip.as_str())?;
                 }
             }
         }
