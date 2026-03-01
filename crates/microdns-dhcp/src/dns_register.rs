@@ -1,7 +1,7 @@
 use chrono::Utc;
 use microdns_core::db::Db;
 use microdns_core::error::Result;
-use microdns_core::types::{Record, RecordData};
+use microdns_core::types::{Record, RecordData, RecordType};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -33,6 +33,7 @@ impl DnsRegistrar {
     }
 
     /// Register forward (A) and reverse (PTR) records for a DHCPv4 lease.
+    /// Deduplicates: skips if identical record exists, updates IP if hostname moved.
     pub fn register_v4(&self, hostname: &str, ip: Ipv4Addr) -> Result<()> {
         let zone = match self.db.get_zone_by_name(&self.forward_zone)? {
             Some(z) => z,
@@ -45,13 +46,30 @@ impl DnsRegistrar {
             }
         };
 
+        let desired = RecordData::A(ip);
+
+        // Check existing A records for this hostname
+        let existing = self.db.query_records(&zone.id, hostname, RecordType::A)?;
+
+        // If exact record already exists, skip
+        if existing.iter().any(|r| r.data == desired) {
+            debug!("A record already exists: {hostname}.{} -> {ip}", self.forward_zone);
+            return Ok(());
+        }
+
+        // Remove stale DHCP-registered A records for this hostname (IP changed)
+        for rec in &existing {
+            self.db.delete_record(&rec.id)?;
+            debug!("removed stale A record: {hostname}.{} -> {:?}", self.forward_zone, rec.data);
+        }
+
         // Create A record
         let a_record = Record {
             id: Uuid::new_v4(),
             zone_id: zone.id,
             name: hostname.to_string(),
             ttl: self.default_ttl,
-            data: RecordData::A(ip),
+            data: desired,
             enabled: true,
             health_check: None,
             created_at: Utc::now(),
@@ -60,26 +78,38 @@ impl DnsRegistrar {
         self.db.create_record(&a_record)?;
         debug!("registered A record: {hostname}.{} -> {ip}", self.forward_zone);
 
-        // Create PTR record in reverse zone
+        // Create PTR record in reverse zone (with dedup)
         if let Some(rev_zone) = self.db.get_zone_by_name(&self.reverse_zone_v4)? {
             let octets = ip.octets();
-            // For a /24, the PTR name is just the last octet
             let ptr_name = octets[3].to_string();
             let ptr_target = format!("{hostname}.{}.", self.forward_zone);
+            let ptr_data = RecordData::PTR(ptr_target.clone());
 
-            let ptr_record = Record {
-                id: Uuid::new_v4(),
-                zone_id: rev_zone.id,
-                name: ptr_name.clone(),
-                ttl: self.default_ttl,
-                data: RecordData::PTR(ptr_target.clone()),
-                enabled: true,
-                health_check: None,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-            };
-            self.db.create_record(&ptr_record)?;
-            debug!("registered PTR record: {ptr_name}.{} -> {ptr_target}", self.reverse_zone_v4);
+            let existing_ptr = self.db.query_records(&rev_zone.id, &ptr_name, RecordType::PTR)?;
+            if !existing_ptr.iter().any(|r| r.data == ptr_data) {
+                // Remove stale PTR for this octet pointing to our hostname
+                for rec in &existing_ptr {
+                    if let RecordData::PTR(ref target) = rec.data {
+                        if target.starts_with(&format!("{hostname}.")) {
+                            self.db.delete_record(&rec.id)?;
+                        }
+                    }
+                }
+
+                let ptr_record = Record {
+                    id: Uuid::new_v4(),
+                    zone_id: rev_zone.id,
+                    name: ptr_name.clone(),
+                    ttl: self.default_ttl,
+                    data: ptr_data,
+                    enabled: true,
+                    health_check: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+                self.db.create_record(&ptr_record)?;
+                debug!("registered PTR record: {ptr_name}.{} -> {ptr_target}", self.reverse_zone_v4);
+            }
         }
 
         self.db.increment_soa_serial(&zone.id)?;
@@ -99,13 +129,24 @@ impl DnsRegistrar {
             }
         };
 
-        // Create AAAA record
+        let desired = RecordData::AAAA(ip);
+        let existing = self.db.query_records(&zone.id, hostname, RecordType::AAAA)?;
+
+        if existing.iter().any(|r| r.data == desired) {
+            debug!("AAAA record already exists: {hostname}.{} -> {ip}", self.forward_zone);
+            return Ok(());
+        }
+
+        for rec in &existing {
+            self.db.delete_record(&rec.id)?;
+        }
+
         let aaaa_record = Record {
             id: Uuid::new_v4(),
             zone_id: zone.id,
             name: hostname.to_string(),
             ttl: self.default_ttl,
-            data: RecordData::AAAA(ip),
+            data: desired,
             enabled: true,
             health_check: None,
             created_at: Utc::now(),
