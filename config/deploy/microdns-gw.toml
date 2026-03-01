@@ -1,0 +1,38 @@
+# MicroDNS - mdns.gw.lo (192.168.1.52)
+# Authoritative for gw.lo and utility zones
+# Forwards g10/g11/gt queries to their respective mdns instances
+
+[instance]
+id = "microdns-gw"
+mode = "standalone"
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:53"
+cache_size = 50000
+
+[dns.recursor.forward_zones]
+"g10.lo" = ["192.168.10.252:53"]
+"10.168.192.in-addr.arpa" = ["192.168.10.252:53"]
+"g11.lo" = ["192.168.11.252:53"]
+"11.168.192.in-addr.arpa" = ["192.168.11.252:53"]
+"gt.lo" = ["192.168.200.199:53"]
+"200.168.192.in-addr.arpa" = ["192.168.200.199:53"]
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[api.grpc]
+enabled = true
+listen = "0.0.0.0:50051"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"
+
+[messaging]
+backend = "noop"
