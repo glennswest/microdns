@@ -289,6 +289,12 @@ async fn main() -> Result<()> {
                 tokio::select! {
                     _ = interval.tick() => {
                         let mgr = microdns_dhcp::lease::LeaseManager::new(db_cleanup.clone());
+                        // Remove orphaned leases (old code leftovers)
+                        match mgr.purge_orphaned_leases() {
+                            Ok(0) => {}
+                            Ok(n) => info!("purged {n} orphaned leases"),
+                            Err(e) => error!("orphan lease cleanup error: {e}"),
+                        }
                         // Keep expired leases for 4x lease time (4 * 600s = 2400s = 40 min)
                         match mgr.purge_expired_leases_with_details(chrono::Duration::seconds(2400)) {
                             Ok(purged) if purged.is_empty() => {}

@@ -283,6 +283,59 @@ impl LeaseManager {
         Ok(details)
     }
 
+    /// Remove orphaned leases — entries in LEASES_TABLE whose ID is not
+    /// referenced by the MAC index. These are leftovers from the old code
+    /// that created new entries on every ACK instead of upserting.
+    pub fn purge_orphaned_leases(&self) -> Result<usize> {
+        let write_txn = self.db.raw().begin_write()?;
+        let count;
+        {
+            let mut leases = write_txn.open_table(LEASES_TABLE)?;
+            let mac_idx = write_txn.open_table(MAC_LEASE_INDEX)?;
+            let mut ip_idx = write_txn.open_table(IP_LEASE_INDEX)?;
+
+            // Build set of lease IDs that the MAC index points to
+            let mut indexed_ids = std::collections::HashSet::new();
+            {
+                let iter = mac_idx.iter()?;
+                for entry in iter {
+                    let entry =
+                        entry.map_err(|e| microdns_core::error::Error::Database(e.to_string()))?;
+                    indexed_ids.insert(entry.1.value().to_string());
+                }
+            }
+
+            // Find orphans: lease entries not in the indexed set
+            let mut orphans: Vec<(String, String, String)> = Vec::new();
+            {
+                let iter = leases.iter()?;
+                for entry in iter {
+                    let entry =
+                        entry.map_err(|e| microdns_core::error::Error::Database(e.to_string()))?;
+                    let id = entry.0.value().to_string();
+                    if !indexed_ids.contains(&id) {
+                        let lease: Lease = serde_json::from_str(entry.1.value())?;
+                        orphans.push((id, lease.mac_addr, lease.ip_addr));
+                    }
+                }
+            }
+
+            count = orphans.len();
+            for (id, _mac, ip) in &orphans {
+                leases.remove(id.as_str())?;
+                // Clean stale IP index entries pointing to this orphan
+                if let Some(v) = ip_idx.get(ip.as_str())? {
+                    if v.value() == id.as_str() {
+                        drop(v);
+                        ip_idx.remove(ip.as_str())?;
+                    }
+                }
+            }
+        }
+        write_txn.commit()?;
+        Ok(count)
+    }
+
     pub fn db(&self) -> &Db {
         &self.db
     }
