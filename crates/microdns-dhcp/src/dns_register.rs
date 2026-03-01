@@ -32,9 +32,24 @@ impl DnsRegistrar {
         }
     }
 
+    /// Strip domain suffix from hostname if already present (e.g. "cap01.gw.lo" → "cap01").
+    /// Prevents double-suffix records like "cap01.gw.lo.gw.lo".
+    fn sanitize_hostname<'a>(&self, hostname: &'a str) -> &'a str {
+        let suffix_dot = format!(".{}.", self.forward_zone);
+        let suffix = format!(".{}", self.forward_zone);
+        if let Some(stripped) = hostname.strip_suffix(&suffix_dot) {
+            stripped
+        } else if let Some(stripped) = hostname.strip_suffix(&suffix) {
+            stripped
+        } else {
+            hostname
+        }
+    }
+
     /// Register forward (A) and reverse (PTR) records for a DHCPv4 lease.
     /// Deduplicates: skips if identical record exists, updates IP if hostname moved.
     pub fn register_v4(&self, hostname: &str, ip: Ipv4Addr) -> Result<()> {
+        let hostname = self.sanitize_hostname(hostname);
         let zone = match self.db.get_zone_by_name(&self.forward_zone)? {
             Some(z) => z,
             None => {
@@ -87,13 +102,9 @@ impl DnsRegistrar {
 
             let existing_ptr = self.db.query_records(&rev_zone.id, &ptr_name, RecordType::PTR)?;
             if !existing_ptr.iter().any(|r| r.data == ptr_data) {
-                // Remove stale PTR for this octet pointing to our hostname
+                // Remove ALL existing PTR records for this IP — one IP = one PTR
                 for rec in &existing_ptr {
-                    if let RecordData::PTR(ref target) = rec.data {
-                        if target.starts_with(&format!("{hostname}.")) {
-                            self.db.delete_record(&rec.id)?;
-                        }
-                    }
+                    self.db.delete_record(&rec.id)?;
                 }
 
                 let ptr_record = Record {
@@ -118,6 +129,7 @@ impl DnsRegistrar {
 
     /// Register forward (AAAA) and reverse (PTR) records for a DHCPv6 lease.
     pub fn register_v6(&self, hostname: &str, ip: Ipv6Addr) -> Result<()> {
+        let hostname = self.sanitize_hostname(hostname);
         let zone = match self.db.get_zone_by_name(&self.forward_zone)? {
             Some(z) => z,
             None => {
@@ -164,6 +176,7 @@ impl DnsRegistrar {
 
     /// Remove DNS records for a released lease.
     pub fn unregister(&self, hostname: &str) -> Result<()> {
+        let hostname = self.sanitize_hostname(hostname);
         let zone = match self.db.get_zone_by_name(&self.forward_zone)? {
             Some(z) => z,
             None => return Ok(()),
