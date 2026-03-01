@@ -53,8 +53,13 @@ impl LeaseManager {
                 .map(|v| v.value().to_string());
 
             if let Some(ref old_id) = existing_id {
-                if let Some(old_json) = leases.get(old_id.as_str())? {
-                    let old_lease: Lease = serde_json::from_str(old_json.value())?;
+                // Read old lease JSON and drop the borrow before mutating
+                let old_lease_json = leases
+                    .get(old_id.as_str())?
+                    .map(|v| v.value().to_string());
+
+                if let Some(json_str) = old_lease_json {
+                    let old_lease: Lease = serde_json::from_str(&json_str)?;
                     // Update existing lease in place
                     let updated = Lease {
                         id: old_lease.id,

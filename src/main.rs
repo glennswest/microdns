@@ -283,13 +283,14 @@ async fn main() -> Result<()> {
         let purge_bus = message_bus.clone();
         let purge_instance_id = config.instance.id.clone();
         tasks.push(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             let mut rx = rx;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         let mgr = microdns_dhcp::lease::LeaseManager::new(db_cleanup.clone());
-                        match mgr.purge_expired_leases_with_details(chrono::Duration::hours(24)) {
+                        // Keep expired leases for 4x lease time (4 * 600s = 2400s = 40 min)
+                        match mgr.purge_expired_leases_with_details(chrono::Duration::seconds(2400)) {
                             Ok(purged) if purged.is_empty() => {}
                             Ok(purged) => {
                                 info!("purged {} expired leases", purged.len());
