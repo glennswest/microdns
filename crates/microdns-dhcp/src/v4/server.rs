@@ -2,7 +2,7 @@ use crate::dns_register::DnsRegistrar;
 use crate::lease::LeaseManager;
 use crate::v4::packet::*;
 use crate::v4::pool::{prefix_len_from_subnet, subnet_mask_from_prefix, Ipv4Pool};
-use microdns_core::config::DhcpV4Config;
+use microdns_core::config::{DhcpMode, DhcpV4Config};
 use microdns_core::db::Db;
 use microdns_msg::events::Event;
 use microdns_msg::MessageBus;
@@ -27,6 +27,7 @@ struct PxeConfig {
 
 pub struct Dhcpv4Server {
     _config: DhcpV4Config,
+    mode: DhcpMode,
     pools: Arc<Mutex<Vec<Ipv4Pool>>>,
     /// PXE config per pool index
     pxe_configs: Vec<Option<PxeConfig>>,
@@ -99,6 +100,7 @@ impl Dhcpv4Server {
 
         Ok(Self {
             _config: config.clone(),
+            mode: config.mode,
             pools: Arc::new(Mutex::new(pools)),
             pxe_configs,
             reservations,
@@ -125,34 +127,122 @@ impl Dhcpv4Server {
         let ports = &self._config.listen_ports;
         let primary_port = ports.first().copied().unwrap_or(67);
 
-        info!("DHCPv4 server listening on 0.0.0.0:{primary_port}");
+        info!(
+            "DHCPv4 server listening on 0.0.0.0:{primary_port} (mode: {:?})",
+            self.mode
+        );
 
         // Restore existing leases into pools
         self.restore_leases().await?;
 
-        let mut buf = vec![0u8; 1500];
-        let mut shutdown = shutdown;
+        match self.mode {
+            DhcpMode::Normal => self.run_normal(primary_port, shutdown).await,
+            DhcpMode::Gateway => self.run_gateway(primary_port, shutdown).await,
+        }
+    }
 
-        // Deadman timer: track last time we processed a relay packet.
-        // If broadcast floods keep arriving but no relay unicasts get
-        // through for 30s, the veth is corrupted — recycle the socket.
+    /// Normal mode: accept all DHCP packets (broadcast and relay).
+    /// Single persistent socket, no deadman timer, no veth workarounds.
+    async fn run_normal(
+        &self,
+        port: u16,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        let socket = loop {
+            match bind_recv_socket(port) {
+                Ok(s) => break s,
+                Err(e) => {
+                    warn!("DHCP bind failed on port {port}: {e}, retrying in 5s");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        };
+        // Enable broadcast so we can send replies to 255.255.255.255
+        socket.set_broadcast(true)?;
+
+        let mut buf = vec![0u8; 1500];
+
+        loop {
+            let recv_result = tokio::select! {
+                r = socket.recv_from(&mut buf) => r,
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        info!("DHCPv4 server shutting down");
+                        return Ok(());
+                    }
+                    continue;
+                }
+            };
+
+            let (len, src) = match recv_result {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("DHCP recv error: {e}");
+                    continue;
+                }
+            };
+
+            let packet = match DhcpPacket::parse(&buf[..len]) {
+                Some(p) => p,
+                None => {
+                    debug!("invalid DHCP packet from {src}");
+                    continue;
+                }
+            };
+
+            if packet.op != 1 {
+                continue;
+            }
+
+            let response = match self.handle_packet(&packet).await {
+                Ok(Some(resp)) => resp,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!("error handling DHCP packet: {e}");
+                    continue;
+                }
+            };
+
+            let dest = if packet.giaddr != Ipv4Addr::UNSPECIFIED {
+                SocketAddr::new(packet.giaddr.into(), 67)
+            } else if packet.flags & 0x8000 != 0 {
+                SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
+            } else if response.yiaddr != Ipv4Addr::UNSPECIFIED {
+                SocketAddr::new(response.yiaddr.into(), 68)
+            } else {
+                SocketAddr::new(Ipv4Addr::BROADCAST.into(), 68)
+            };
+
+            let resp_bytes = response.to_bytes();
+            info!("sending DHCP response ({} bytes) to {dest}", resp_bytes.len());
+            match socket.send_to(&resp_bytes, dest).await {
+                Ok(n) => debug!("sent DHCP response to {dest} ({n} bytes)"),
+                Err(e) => error!("failed to send DHCP response to {dest}: {e}"),
+            }
+        }
+    }
+
+    /// Gateway mode: only accept relay-forwarded packets (giaddr != 0).
+    /// Includes veth deadman timer and socket recycling to work around
+    /// RouterOS container networking bugs.
+    async fn run_gateway(
+        &self,
+        port: u16,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        let mut buf = vec![0u8; 1500];
         let mut last_relay_packet = tokio::time::Instant::now();
 
         'outer: loop {
-            // Open a fresh recv socket. RouterOS container networking bug:
-            // any send_to() from inside the container can corrupt the veth
-            // receive path for unicasts. Recycling the socket resets it.
-            let recv_socket = match bind_recv_socket(primary_port) {
+            let recv_socket = match bind_recv_socket(port) {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("DHCP bind failed on port {primary_port}: {e}, retrying in 5s");
+                    warn!("DHCP bind failed on port {port}: {e}, retrying in 5s");
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
             };
 
-            // Inner loop: reuse the same socket until we send a response
-            // (which may corrupt veth) or the deadman timer fires.
             loop {
                 let deadline = last_relay_packet + Duration::from_secs(30);
 
@@ -193,18 +283,12 @@ impl Dhcpv4Server {
                     continue;
                 }
 
-                // Skip raw broadcast packets (giaddr=0) — only process relay
-                // unicasts. Broadcasts keep arriving even when the veth is
-                // corrupted, so they don't reset the deadman timer.
                 if packet.giaddr == Ipv4Addr::UNSPECIFIED {
-                    debug!("ignoring raw broadcast DHCP from {src} (no relay giaddr)");
+                    debug!("ignoring raw broadcast DHCP from {src} (gateway mode, no relay giaddr)");
                     continue;
                 }
 
-                // Valid relay packet — reset deadman timer
                 last_relay_packet = tokio::time::Instant::now();
-
-                // Drop recv socket BEFORE sending — frees the veth state
                 drop(recv_socket);
 
                 let response = match self.handle_packet(&packet).await {
@@ -232,8 +316,6 @@ impl Dhcpv4Server {
                     Ok(n) => debug!("sent DHCP response to {dest} ({n} bytes)"),
                     Err(e) => error!("failed to send DHCP response to {dest}: {e}"),
                 }
-                // send_one_shot may have corrupted veth — break inner loop
-                // to open a fresh recv socket
                 continue 'outer;
             }
         }

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-03-01
+- **feat:** DHCPv4 dual mode — `normal` (direct broadcast, standard DHCP) and `gateway` (relay-only with veth deadman timer for RouterOS/Rose containers)
+- **fix:** DHCPv4 now works on non-relay deployments (e.g. Proxmox LXC at 192.168.1.52) — previously all direct broadcasts were silently dropped
+
 ### 2026-02-28
 - **feat:** x86_64-unknown-linux-musl cross-compile support (`.cargo/config.toml` linker config)
 - **feat:** `deploy_mdns_gw.sh` — deploy script for mdns.gw.lo (192.168.1.52, Alpine/OpenRC)

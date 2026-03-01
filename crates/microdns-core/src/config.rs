@@ -110,11 +110,36 @@ pub struct DhcpConfig {
     pub dns_registration: Option<DnsRegistrationConfig>,
 }
 
+/// DHCP operating mode.
+///
+/// - `normal`  — accept direct broadcast packets from clients on the local
+///               subnet (standard DHCP).  No deadman timer.
+/// - `gateway` — only accept relay-forwarded packets (giaddr != 0).  Includes
+///               the veth deadman timer that works around RouterOS container
+///               networking bugs.  Use this when microdns runs inside a
+///               MikroTik / Rose appliance container behind a DHCP relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DhcpMode {
+    Normal,
+    Gateway,
+}
+
+impl Default for DhcpMode {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpV4Config {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub interface: String,
+    /// Operating mode: "normal" (direct broadcast) or "gateway" (relay-only).
+    /// Defaults to "normal".
+    #[serde(default)]
+    pub mode: DhcpMode,
     /// The DHCP server's own IP address, used for siaddr and option 54
     /// (server identifier). If not set, falls back to the first pool's gateway.
     #[serde(default)]
