@@ -27,7 +27,7 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = Config::from_file(&cli.config)?;
+    let mut config = Config::from_file(&cli.config)?;
 
     // Initialize logging
     let log_buffer = init_logging(&config.logging);
@@ -139,6 +139,9 @@ async fn main() -> Result<()> {
         InstanceMode::Standalone => {
             info!("standalone mode, federation disabled");
         }
+        InstanceMode::Gateway => {
+            info!("gateway mode (RouterOS/rose), federation disabled");
+        }
     }
 
     // Start replication agent if configured
@@ -215,6 +218,18 @@ async fn main() -> Result<()> {
     }
 
     // Start DHCP servers
+    // In gateway mode (RouterOS/rose), default DHCP to relay-only unless
+    // the config explicitly sets a different mode.
+    if config.instance.mode == InstanceMode::Gateway {
+        if let Some(ref mut dhcp_config) = config.dhcp {
+            if let Some(ref mut v4) = dhcp_config.v4 {
+                if v4.mode == microdns_core::config::DhcpMode::default() {
+                    v4.mode = microdns_core::config::DhcpMode::Gateway;
+                    info!("gateway instance mode: DHCP defaulting to relay-only");
+                }
+            }
+        }
+    }
     if let Some(ref dhcp_config) = config.dhcp {
         // Create DNS registrar if configured
         let dns_registrar = dhcp_config

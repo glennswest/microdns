@@ -208,12 +208,19 @@ pub struct ReplicationMeta {
     pub source_serial: u32,
 }
 
-/// Instance mode for federation
+/// Instance mode for federation and runtime environment.
+///
+/// - `standalone` — single-instance, no federation, standard DHCP.
+/// - `gateway`    — single-instance, no federation, DHCP defaults to
+///                  relay-only mode (for RouterOS / rose containers).
+/// - `leaf`       — federation leaf, reports to coordinator.
+/// - `coordinator` — federation coordinator, aggregates leaf status.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceMode {
     #[default]
     Standalone,
+    Gateway,
     Leaf,
     Coordinator,
 }

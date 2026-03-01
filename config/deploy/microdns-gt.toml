@@ -8,7 +8,7 @@ mode = "standalone"
 
 [[instance.peers]]
 id = "microdns-main"
-addr = "192.168.1.199"
+addr = "192.168.1.52"
 
 [[instance.peers]]
 id = "microdns-g10"
@@ -24,12 +24,12 @@ listen = "0.0.0.0:53"
 cache_size = 10000
 
 [dns.recursor.forward_zones]
-"gw.lo" = ["192.168.1.199:53"]
+"gw.lo" = ["192.168.1.52:53"]
 "g10.lo" = ["192.168.10.199:53"]
 "10.168.192.in-addr.arpa" = ["192.168.10.199:53"]
 "g11.lo" = ["192.168.11.199:53"]
 "11.168.192.in-addr.arpa" = ["192.168.11.199:53"]
-"1.168.192.in-addr.arpa" = ["192.168.1.199:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.52:53"]
 
 [dhcp.v4]
 enabled = true
