@@ -8,7 +8,7 @@ set -euo pipefail
 #   ./scripts/build-and-push.sh              # build arm64, push to local registry as :edge
 #   ./scripts/build-and-push.sh latest       # build arm64, push as :latest
 
-REGISTRY="${REGISTRY:-192.168.200.2:5000}"
+REGISTRY="${REGISTRY:-registry.gt.lo:5000}"
 REPO="${REGISTRY}/microdns"
 TAG="${1:-edge}"
 
@@ -19,10 +19,16 @@ cd "$PROJECT_DIR"
 echo "==> Building microdns for ARM64 (aarch64-unknown-linux-musl)..."
 cargo build --release --target aarch64-unknown-linux-musl
 
+echo "==> Preparing binary for scratch image..."
+cp target/aarch64-unknown-linux-musl/release/microdns microdns
+
 echo "==> Building container image with podman..."
 podman build --platform linux/arm64 \
+    -f Dockerfile.scratch \
     -t "${REPO}:${TAG}" \
     .
+
+rm -f microdns
 
 echo "==> Pushing to ${REPO}:${TAG}..."
 podman push --tls-verify=false "${REPO}:${TAG}"
