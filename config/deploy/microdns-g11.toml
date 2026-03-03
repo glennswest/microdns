@@ -1,5 +1,5 @@
 # MicroDNS g11 Instance
-# IP: 192.168.11.201 (bridge-boot)
+# IP: 192.168.11.252 (mkube-managed)
 # Serves: g11.lo, reverse 11.168.192; DHCP for 192.168.11.x (IPMI only, no PXE)
 
 [instance]
@@ -12,7 +12,7 @@ addr = "192.168.1.52"
 
 [[instance.peers]]
 id = "microdns-g10"
-addr = "192.168.10.199"
+addr = "192.168.10.252"
 
 [[instance.peers]]
 id = "microdns-gt"
@@ -29,8 +29,8 @@ cache_size = 10000
 "pv.lo" = ["192.168.1.52:53"]
 "bm.lo" = ["192.168.1.52:53"]
 "ipmi.lo" = ["192.168.1.52:53"]
-"g10.lo" = ["192.168.10.199:53"]
-"10.168.192.in-addr.arpa" = ["192.168.10.199:53"]
+"g10.lo" = ["192.168.10.252:53"]
+"10.168.192.in-addr.arpa" = ["192.168.10.252:53"]
 "gt.lo" = ["192.168.200.199:53"]
 "200.168.192.in-addr.arpa" = ["192.168.200.199:53"]
 "1.168.192.in-addr.arpa" = ["192.168.1.52:53"]

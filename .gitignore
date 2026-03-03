@@ -2,6 +2,7 @@
 target/
 *.tar.gz
 microdns-arm64
+microdns-amd64
 # Temporary binary copy during podman build
 /microdns
 
