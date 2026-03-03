@@ -86,7 +86,10 @@ mac = "0C:C4:7A:02:6C:A6"
 ip = "192.168.11.15"
 hostname = "server6"
 
-# TODO: server7 at 192.168.11.16 — MAC unknown, IPMI port may not be cabled
+[[dhcp.v4.reservations]]
+mac = "0C:C4:7A:00:4C:0C"
+ip = "192.168.11.16"
+hostname = "server7"
 
 [[dhcp.v4.reservations]]
 mac = "0C:C4:7A:02:6B:2E"
