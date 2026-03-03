@@ -47,10 +47,10 @@ gateway = "192.168.10.1"
 dns = ["192.168.10.252"]
 domain = "g10.lo"
 lease_time_secs = 600
-next_server = "192.168.10.200"
+next_server = "192.168.200.210"
 boot_file = "undionly.kpxe"
 boot_file_efi = "ipxe.efi"
-ipxe_boot_url = "http://192.168.10.200/boot.ipxe"
+ipxe_boot_url = "http://192.168.200.210:8080/boot.ipxe"
 
 # Static reservations (14 entries from rose1 dhcp10)
 [[dhcp.v4.reservations]]
