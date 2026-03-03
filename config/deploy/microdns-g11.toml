@@ -1,6 +1,6 @@
 # MicroDNS g11 Instance
 # IP: 192.168.11.201 (bridge-boot)
-# Serves: g11.lo, reverse 11.168.192; DHCP for 192.168.11.x; PXE boot
+# Serves: g11.lo, reverse 11.168.192; DHCP for 192.168.11.x (IPMI only, no PXE)
 
 [instance]
 id = "microdns-g11"
@@ -47,10 +47,6 @@ gateway = "192.168.11.1"
 dns = ["192.168.11.252"]
 domain = "g11.lo"
 lease_time_secs = 600
-next_server = "192.168.200.210"
-boot_file = "undionly.kpxe"
-boot_file_efi = "ipxe.efi"
-ipxe_boot_url = "http://192.168.200.210:8080/boot.ipxe"
 
 # Static reservations (g11 IPMI + switch)
 [[dhcp.v4.reservations]]
