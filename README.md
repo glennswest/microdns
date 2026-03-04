@@ -557,6 +557,21 @@ crates/
   microdns-api/        REST (axum) + gRPC (tonic) + dashboard + WebSocket
 ```
 
+## TODO
+
+### Database-Driven Config (eliminate TOML)
+
+Currently microdns requires a TOML config file to start, which makes deployment fragile — you must generate configs, SCP them to hosts, and restart containers to apply changes. The target architecture:
+
+- **Minimal bootstrap**: only CLI args or env vars for listen addresses and data dir path
+- **All config in redb**: DHCP pools, reservations, forward zones, upstream servers, instance peers — stored in the database, not TOML
+- **REST API for config**: `POST/PUT/DELETE /api/v1/config/dhcp/pools`, `/api/v1/config/forward-zones`, `/api/v1/config/upstream`, etc.
+- **PVC is the only state**: the redb file on a volume mount is everything. Replace the container image any time without losing config.
+- **Live reload**: config changes via API take effect immediately without restart
+- **Import from TOML**: one-time migration command to seed database from existing TOML configs
+
+This eliminates the need for ConfigMaps, SCP, and container restarts for config changes. Deploy the binary, point it at a PVC, configure via REST.
+
 ## License
 
 MIT
