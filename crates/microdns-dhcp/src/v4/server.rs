@@ -863,12 +863,17 @@ impl Dhcpv4Server {
                 .map(|d| {
                     if d.len() >= 2 {
                         let arch = u16::from_be_bytes([d[0], d[1]]);
+                        info!("client arch type: {} (EFI={})", arch, matches!(arch, 6 | 7 | 9 | 10 | 11));
                         matches!(arch, 6 | 7 | 9 | 10 | 11)
                     } else {
+                        info!("client arch option present but too short ({} bytes)", d.len());
                         false
                     }
                 })
-                .unwrap_or(false);
+                .unwrap_or_else(|| {
+                    info!("no client arch option (93) in request");
+                    false
+                });
 
             let boot_file = if is_ipxe {
                 if effective_root_path.is_some() {
