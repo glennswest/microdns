@@ -324,6 +324,7 @@ async fn main() -> Result<()> {
             }
         }
     }
+    let mut dhcp_lease_event_tx: Option<tokio::sync::broadcast::Sender<String>> = None;
     if let Some(ref dhcp_config) = config.dhcp {
         // Create DNS registrar if configured
         let dns_registrar = dhcp_config
@@ -343,12 +344,18 @@ async fn main() -> Result<()> {
         // DHCPv4
         if let Some(ref v4_config) = dhcp_config.v4 {
             if v4_config.enabled {
+                let (lease_event_tx, _) = tokio::sync::broadcast::channel::<String>(256);
                 let mut server =
                     microdns_dhcp::v4::server::Dhcpv4Server::new(v4_config, db.clone())?;
                 if let Some(ref registrar) = dns_registrar {
                     server = server.with_dns_registrar(registrar.clone());
                 }
                 server = server.with_message_bus(message_bus.clone(), &config.instance.id);
+                server = server.with_lease_event_tx(lease_event_tx.clone());
+
+                // Store the lease_event_tx for bridging to dashboard API later
+                dhcp_lease_event_tx = Some(lease_event_tx);
+
                 let rx = shutdown_rx.clone();
                 tasks.push(tokio::spawn(async move {
                     if let Err(e) = server.run(rx).await {
@@ -483,6 +490,42 @@ async fn main() -> Result<()> {
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());
+            }
+
+            // Bridge DHCP lease events to dashboard
+            if let Some(lease_rx_sender) = dhcp_lease_event_tx.take() {
+                let dashboard_tx = api.event_tx();
+                let mut lease_rx = lease_rx_sender.subscribe();
+                let bridge_shutdown = shutdown_rx.clone();
+                tasks.push(tokio::spawn(async move {
+                    let mut rx = bridge_shutdown;
+                    loop {
+                        tokio::select! {
+                            result = lease_rx.recv() => {
+                                match result {
+                                    Ok(json) => {
+                                        // Parse the JSON to extract action, ip, mac
+                                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                                            let action = parsed["action"].as_str().unwrap_or("unknown").to_string();
+                                            let ip = parsed["ip"].as_str().unwrap_or("").to_string();
+                                            let mac = parsed["mac"].as_str().unwrap_or("").to_string();
+                                            let _ = dashboard_tx.send(microdns_api::DashboardEvent::LeaseChanged {
+                                                action, ip, mac,
+                                            });
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                        warn!("lease event bridge lagged by {n} messages");
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            _ = rx.changed() => {
+                                if *rx.borrow() { break; }
+                            }
+                        }
+                    }
+                }));
             }
 
             let rx = shutdown_rx.clone();

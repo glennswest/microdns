@@ -12,7 +12,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 use tracing::{debug, error, info, warn};
 
 /// PXE boot config for a pool
@@ -40,6 +40,9 @@ pub struct Dhcpv4Server {
     dns_registrar: Option<Arc<DnsRegistrar>>,
     message_bus: Option<Arc<dyn MessageBus>>,
     instance_id: String,
+    /// Broadcast sender for lease events (dashboard integration).
+    /// Receives JSON events like {"action":"created","ip":"...","mac":"..."}.
+    lease_event_tx: Option<broadcast::Sender<String>>,
 }
 
 impl Dhcpv4Server {
@@ -112,6 +115,7 @@ impl Dhcpv4Server {
             dns_registrar: None,
             message_bus: None,
             instance_id: String::new(),
+            lease_event_tx: None,
         })
     }
 
@@ -175,6 +179,7 @@ impl Dhcpv4Server {
             dns_registrar: None,
             message_bus: None,
             instance_id: String::new(),
+            lease_event_tx: None,
         })
     }
 
@@ -204,6 +209,11 @@ impl Dhcpv4Server {
     pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>, instance_id: &str) -> Self {
         self.message_bus = Some(bus);
         self.instance_id = instance_id.to_string();
+        self
+    }
+
+    pub fn with_lease_event_tx(mut self, tx: broadcast::Sender<String>) -> Self {
+        self.lease_event_tx = Some(tx);
         self
     }
 
@@ -587,6 +597,15 @@ impl Dhcpv4Server {
             }
         }
 
+        // Broadcast lease event for dashboard
+        if let Some(ref tx) = self.lease_event_tx {
+            let json = format!(
+                r#"{{"action":"created","ip":"{}","mac":"{}"}}"#,
+                ip, mac
+            );
+            let _ = tx.send(json);
+        }
+
         // DNS auto-registration
         if let (Some(ref registrar), Some(ref name)) = (&self.dns_registrar, &hostname) {
             if let Err(e) = registrar.register_v4(name, ip) {
@@ -640,6 +659,15 @@ impl Dhcpv4Server {
             if let Err(e) = bus.publish(&event).await {
                 warn!("failed to publish LeaseReleased event: {e}");
             }
+        }
+
+        // Broadcast release event for dashboard
+        if let Some(ref tx) = self.lease_event_tx {
+            let json = format!(
+                r#"{{"action":"released","ip":"{}","mac":"{}"}}"#,
+                ip, mac
+            );
+            let _ = tx.send(json);
         }
 
         Ok(())

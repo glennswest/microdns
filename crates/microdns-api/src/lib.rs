@@ -98,6 +98,10 @@ impl ApiServer {
         self.event_tx.subscribe()
     }
 
+    pub fn event_tx(&self) -> broadcast::Sender<DashboardEvent> {
+        self.event_tx.clone()
+    }
+
     pub fn with_dashboard_addr(mut self, addr: SocketAddr) -> Self {
         self.dashboard_addr = Some(addr);
         self
