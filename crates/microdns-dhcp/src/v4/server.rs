@@ -862,14 +862,12 @@ impl Dhcpv4Server {
                 })
                 .unwrap_or(false);
 
-            // When iPXE is detected and root_path is set (iSCSI URI), send it
-            // as option 17. iPXE will sanboot directly from the iSCSI target
-            // without needing an HTTP boot script.
-            if is_ipxe {
-                if let Some(ref rp) = effective_root_path {
-                    info!("iPXE client detected, serving root-path: {}", rp);
-                    options.push(string_option(OPT_ROOT_PATH, rp));
-                }
+            // Option 17 (root-path) — always send when set. Used by iPXE for
+            // direct sanboot from iSCSI target. Standard DHCP option, safe for
+            // all clients (non-iPXE clients simply ignore it).
+            if let Some(ref rp) = effective_root_path {
+                info!("serving root-path option 17: {}", rp);
+                options.push(string_option(OPT_ROOT_PATH, rp));
             }
 
             let boot_file = if is_ipxe {
