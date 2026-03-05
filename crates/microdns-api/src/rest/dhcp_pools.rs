@@ -134,9 +134,6 @@ async fn create_pool(
 
     state.db.create_dhcp_pool(&pool).map_err(internal_error)?;
 
-    // Signal DHCP reload
-    let _ = state.dhcp_reload_tx.send(());
-
     // Publish events
     let _ = state.event_tx.send(DashboardEvent::DhcpPoolChanged {
         action: "ADDED".to_string(),
@@ -192,7 +189,6 @@ async fn patch_pool(
 
     state.db.update_dhcp_pool(&pool).map_err(internal_error)?;
 
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DhcpPoolChanged {
         action: "MODIFIED".to_string(),
         pool_id: pool.id.to_string(),
@@ -227,7 +223,6 @@ async fn delete_pool(
         .delete_dhcp_pool(&id)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DhcpPoolChanged {
         action: "DELETED".to_string(),
         pool_id: id.to_string(),

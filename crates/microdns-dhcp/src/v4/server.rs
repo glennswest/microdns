@@ -26,26 +26,6 @@ struct PxeConfig {
     ipxe_boot_url: Option<String>,
 }
 
-/// Per-reservation option overrides (loaded from DB)
-#[derive(Debug, Clone, Default)]
-pub struct ReservationOverrides {
-    pub gateway: Option<Ipv4Addr>,
-    pub dns_servers: Option<Vec<Ipv4Addr>>,
-    pub domain: Option<String>,
-    pub ntp_servers: Option<Vec<Ipv4Addr>>,
-    pub domain_search: Option<Vec<String>>,
-    pub mtu: Option<u16>,
-    pub next_server: Option<Ipv4Addr>,
-    pub boot_file: Option<String>,
-    pub boot_file_efi: Option<String>,
-    pub ipxe_boot_url: Option<String>,
-    pub static_routes: Option<Vec<(String, Ipv4Addr)>>,
-    pub log_server: Option<Ipv4Addr>,
-    pub time_offset: Option<i32>,
-    pub wpad_url: Option<String>,
-    pub lease_time_secs: Option<u32>,
-}
-
 pub struct Dhcpv4Server {
     _config: Option<DhcpV4Config>,
     db: Db,
@@ -53,17 +33,13 @@ pub struct Dhcpv4Server {
     pools: Arc<Mutex<Vec<Ipv4Pool>>>,
     /// PXE config per pool index
     pxe_configs: Vec<Option<PxeConfig>>,
-    /// MAC → (IP, hostname) reservations
+    /// MAC → (IP, hostname) from config file reservations (immutable at startup)
     reservations: HashMap<String, (Ipv4Addr, Option<String>)>,
-    /// Per-reservation overrides (MAC → overrides)
-    reservation_overrides: HashMap<String, ReservationOverrides>,
     server_ip: Ipv4Addr,
     lease_manager: Arc<LeaseManager>,
     dns_registrar: Option<Arc<DnsRegistrar>>,
     message_bus: Option<Arc<dyn MessageBus>>,
     instance_id: String,
-    /// Watch channel for hot-reload signals from API
-    reload_rx: Option<watch::Receiver<()>>,
 }
 
 impl Dhcpv4Server {
@@ -131,61 +107,22 @@ impl Dhcpv4Server {
             pools: Arc::new(Mutex::new(pools)),
             pxe_configs,
             reservations,
-            reservation_overrides: HashMap::new(),
             server_ip,
             lease_manager,
             dns_registrar: None,
             message_bus: None,
             instance_id: String::new(),
-            reload_rx: None,
         })
     }
 
-    /// Create a DHCP server that loads pools and reservations from the database.
-    /// Accepts an optional reload watch channel — when signaled, the server
-    /// re-reads pools and reservations from DB without restart.
+    /// Create a DHCP server that loads pool definitions from the database.
+    /// Reservations are read from DB on every request — no in-memory cache.
     pub fn from_db(
         db: Db,
         mode: DhcpMode,
         server_ip: Option<Ipv4Addr>,
-        reload_rx: Option<watch::Receiver<()>>,
     ) -> anyhow::Result<Self> {
-        let (pools, pxe_configs, reservations, reservation_overrides, effective_server_ip) =
-            Self::load_from_db(&db, server_ip)?;
-
-        let lease_manager = Arc::new(LeaseManager::new(db.clone()));
-
-        Ok(Self {
-            _config: None,
-            db,
-            mode,
-            pools: Arc::new(Mutex::new(pools)),
-            pxe_configs,
-            reservations,
-            reservation_overrides,
-            server_ip: effective_server_ip,
-            lease_manager,
-            dns_registrar: None,
-            message_bus: None,
-            instance_id: String::new(),
-            reload_rx,
-        })
-    }
-
-    /// Load pools and reservations from database
-    fn load_from_db(
-        db: &Db,
-        server_ip_override: Option<Ipv4Addr>,
-    ) -> anyhow::Result<(
-        Vec<Ipv4Pool>,
-        Vec<Option<PxeConfig>>,
-        HashMap<String, (Ipv4Addr, Option<String>)>,
-        HashMap<String, ReservationOverrides>,
-        Ipv4Addr,
-    )> {
         let db_pools = db.list_dhcp_pools().unwrap_or_default();
-        let db_reservations = db.list_dhcp_reservations().unwrap_or_default();
-
         let mut pools = Vec::new();
         let mut pxe_configs = Vec::new();
 
@@ -220,52 +157,43 @@ impl Dhcpv4Server {
             pxe_configs.push(pxe);
         }
 
-        let mut reservations = HashMap::new();
-        let mut reservation_overrides = HashMap::new();
-
-        for res in &db_reservations {
-            let mac = res.mac.to_lowercase();
-            let ip: Ipv4Addr = res.ip.parse()?;
-            reservations.insert(mac.clone(), (ip, res.hostname.clone()));
-            reservation_overrides.insert(mac, Self::build_overrides(res));
-        }
-
-        let server_ip = server_ip_override
+        let effective_server_ip = server_ip
             .or_else(|| pools.first().map(|p| p.gateway))
             .unwrap_or(Ipv4Addr::UNSPECIFIED);
 
-        Ok((pools, pxe_configs, reservations, reservation_overrides, server_ip))
+        let lease_manager = Arc::new(LeaseManager::new(db.clone()));
+
+        Ok(Self {
+            _config: None,
+            db,
+            mode,
+            pools: Arc::new(Mutex::new(pools)),
+            pxe_configs,
+            reservations: HashMap::new(), // DB-only mode — no config file reservations
+            server_ip: effective_server_ip,
+            lease_manager,
+            dns_registrar: None,
+            message_bus: None,
+            instance_id: String::new(),
+        })
     }
 
-    fn build_overrides(res: &DhcpDbReservation) -> ReservationOverrides {
-        ReservationOverrides {
-            gateway: res.gateway.as_ref().and_then(|s| s.parse().ok()),
-            dns_servers: res.dns_servers.as_ref().map(|v| {
-                v.iter().filter_map(|s| s.parse().ok()).collect()
-            }),
-            domain: res.domain.clone(),
-            ntp_servers: res.ntp_servers.as_ref().map(|v| {
-                v.iter().filter_map(|s| s.parse().ok()).collect()
-            }),
-            domain_search: res.domain_search.clone(),
-            mtu: res.mtu,
-            next_server: res.next_server.as_ref().and_then(|s| s.parse().ok()),
-            boot_file: res.boot_file.clone(),
-            boot_file_efi: res.boot_file_efi.clone(),
-            ipxe_boot_url: res.ipxe_boot_url.clone(),
-            static_routes: res.static_routes.as_ref().map(|routes| {
-                routes
-                    .iter()
-                    .filter_map(|r| {
-                        r.gateway.parse::<Ipv4Addr>().ok().map(|gw| (r.destination.clone(), gw))
-                    })
-                    .collect()
-            }),
-            log_server: res.log_server.as_ref().and_then(|s| s.parse().ok()),
-            time_offset: res.time_offset,
-            wpad_url: res.wpad_url.clone(),
-            lease_time_secs: res.lease_time_secs.map(|v| v as u32),
+    /// Look up a reservation by MAC. Checks database first, then falls back
+    /// to config-file reservations.
+    fn get_reservation(&self, mac: &str) -> Option<(Ipv4Addr, Option<String>)> {
+        // Database is the live source of truth
+        if let Ok(Some(res)) = self.db.get_dhcp_reservation(mac) {
+            if let Ok(ip) = res.ip.parse() {
+                return Some((ip, res.hostname.clone()));
+            }
         }
+        // Fall back to static config-file reservations
+        self.reservations.get(mac).cloned()
+    }
+
+    /// Get full reservation details from DB (for per-reservation option overrides).
+    fn get_db_reservation(&self, mac: &str) -> Option<DhcpDbReservation> {
+        self.db.get_dhcp_reservation(mac).ok().flatten()
     }
 
     pub fn with_dns_registrar(mut self, registrar: Arc<DnsRegistrar>) -> Self {
@@ -279,39 +207,7 @@ impl Dhcpv4Server {
         self
     }
 
-    pub fn with_reload(mut self, reload_rx: watch::Receiver<()>) -> Self {
-        self.reload_rx = Some(reload_rx);
-        self
-    }
-
-    /// Reload pools and reservations from database. Called when API signals a change.
-    async fn reload_from_db(&mut self) {
-        let server_ip_override = if self.server_ip != Ipv4Addr::UNSPECIFIED {
-            Some(self.server_ip)
-        } else {
-            None
-        };
-
-        match Self::load_from_db(&self.db, server_ip_override) {
-            Ok((new_pools, new_pxe, new_res, new_overrides, new_server_ip)) => {
-                {
-                    let mut pools = self.pools.lock().await;
-                    *pools = new_pools;
-                }
-                self.pxe_configs = new_pxe;
-                self.reservations = new_res;
-                self.reservation_overrides = new_overrides;
-                self.server_ip = new_server_ip;
-                info!("DHCP: reloaded {} pools, {} reservations from database",
-                    self.pxe_configs.len(), self.reservations.len());
-            }
-            Err(e) => {
-                error!("DHCP: failed to reload from database: {e}");
-            }
-        }
-    }
-
-    pub async fn run(mut self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
+    pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let primary_port = self
             ._config
             .as_ref()
@@ -335,7 +231,7 @@ impl Dhcpv4Server {
     /// Normal mode: accept all DHCP packets (broadcast and relay).
     /// Single persistent socket, no deadman timer, no veth workarounds.
     async fn run_normal(
-        &mut self,
+        &self,
         port: u16,
         mut shutdown: watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
@@ -355,29 +251,11 @@ impl Dhcpv4Server {
         let mut pool_sync = tokio::time::interval(Duration::from_secs(60));
 
         loop {
-            // Build a future for the optional reload channel
-            let reload_changed = async {
-                if let Some(ref mut rx) = self.reload_rx {
-                    let _ = rx.changed().await;
-                } else {
-                    // Never resolves
-                    std::future::pending::<()>().await;
-                }
-            };
-
             let recv_result = tokio::select! {
                 r = socket.recv_from(&mut buf) => r,
                 _ = pool_sync.tick() => {
                     if let Err(e) = self.sync_pool().await {
                         warn!("pool sync error: {e}");
-                    }
-                    continue;
-                }
-                _ = reload_changed => {
-                    self.reload_from_db().await;
-                    // Re-sync pools after reload
-                    if let Err(e) = self.sync_pool().await {
-                        warn!("pool sync error after reload: {e}");
                     }
                     continue;
                 }
@@ -446,7 +324,7 @@ impl Dhcpv4Server {
     /// Includes veth deadman timer and socket recycling to work around
     /// RouterOS container networking bugs.
     async fn run_gateway(
-        &mut self,
+        &self,
         port: u16,
         mut shutdown: watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
@@ -467,26 +345,11 @@ impl Dhcpv4Server {
             loop {
                 let deadline = last_relay_packet + Duration::from_secs(30);
 
-                let reload_changed = async {
-                    if let Some(ref mut rx) = self.reload_rx {
-                        let _ = rx.changed().await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                };
-
                 let recv_result = tokio::select! {
                     r = recv_socket.recv_from(&mut buf) => r,
                     _ = pool_sync.tick() => {
                         if let Err(e) = self.sync_pool().await {
                             warn!("pool sync error: {e}");
-                        }
-                        continue;
-                    }
-                    _ = reload_changed => {
-                        self.reload_from_db().await;
-                        if let Err(e) = self.sync_pool().await {
-                            warn!("pool sync error after reload: {e}");
                         }
                         continue;
                     }
@@ -595,9 +458,9 @@ impl Dhcpv4Server {
     ) -> anyhow::Result<Option<DhcpPacket>> {
         let mac = request.mac_address();
 
-        // Check static reservations first
-        if let Some((reserved_ip, _hostname)) = self.reservations.get(&mac) {
-            let ip = *reserved_ip;
+        // Check reservations (reads from database, falls back to config)
+        if let Some((reserved_ip, _hostname)) = self.get_reservation(&mac) {
+            let ip = reserved_ip;
             // Mark as allocated in pool so it's not given to someone else
             {
                 let mut pools = self.pools.lock().await;
@@ -662,8 +525,8 @@ impl Dhcpv4Server {
         };
 
         // Validate against reservation if one exists
-        if let Some((reserved_ip, _)) = self.reservations.get(&mac) {
-            if *reserved_ip != ip {
+        if let Some((reserved_ip, _)) = self.get_reservation(&mac) {
+            if reserved_ip != ip {
                 warn!("client {mac} requested {ip} but has reservation for {reserved_ip}");
                 return Ok(Some(self.build_nak(request).await));
             }
@@ -671,9 +534,7 @@ impl Dhcpv4Server {
 
         // Use reservation hostname if client didn't provide one
         let hostname = request.hostname().or_else(|| {
-            self.reservations
-                .get(&mac)
-                .and_then(|(_, h)| h.clone())
+            self.get_reservation(&mac).and_then(|(_, h)| h)
         });
 
         let pool_info = {
@@ -688,7 +549,7 @@ impl Dhcpv4Server {
             Some(info) => info,
             None => {
                 // Check if this is a reservation — allow it even outside pool range
-                if self.reservations.get(&mac).is_some() {
+                if self.get_reservation(&mac).is_some() {
                     let pools = self.pools.lock().await;
                     pools
                         .first()
@@ -757,7 +618,7 @@ impl Dhcpv4Server {
         }
 
         // Release from pool (skip for reservations — they stay allocated)
-        if !self.reservations.contains_key(&mac) {
+        if self.get_reservation(&mac).is_none() {
             let mut pools = self.pools.lock().await;
             for pool in pools.iter_mut() {
                 pool.release(&ip);
@@ -826,7 +687,8 @@ impl Dhcpv4Server {
         msg_type: DhcpMessageType,
     ) -> DhcpPacket {
         let mac = request.mac_address();
-        let overrides = self.reservation_overrides.get(&mac);
+        // Read per-reservation overrides directly from database
+        let db_res = self.get_db_reservation(&mac);
 
         let pools = self.pools.lock().await;
         let pool_idx = pools.iter().position(|p| p.contains(ip));
@@ -846,59 +708,76 @@ impl Dhcpv4Server {
             options.push(ip_option(OPT_SUBNET_MASK, pool.subnet_mask));
 
             // Gateway: per-reservation override or pool default
-            let gw = overrides.and_then(|o| o.gateway).unwrap_or(pool.gateway);
+            let gw = db_res
+                .as_ref()
+                .and_then(|r| r.gateway.as_ref())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(pool.gateway);
             options.push(ip_option(OPT_ROUTER, gw));
 
             // Lease time: per-reservation override or pool default
-            let lease_time = overrides
-                .and_then(|o| o.lease_time_secs)
+            let lease_time = db_res
+                .as_ref()
+                .and_then(|r| r.lease_time_secs)
+                .map(|v| v as u32)
                 .unwrap_or(pool.lease_time_secs);
             options.push(u32_option(OPT_LEASE_TIME, lease_time));
 
             // DNS servers
-            let dns = overrides
-                .and_then(|o| o.dns_servers.as_ref())
-                .unwrap_or(&pool.dns_servers);
+            let override_dns: Option<Vec<Ipv4Addr>> = db_res.as_ref().and_then(|r| {
+                r.dns_servers.as_ref().map(|v| {
+                    v.iter().filter_map(|s| s.parse().ok()).collect()
+                })
+            });
+            let dns = override_dns.as_deref().unwrap_or(&pool.dns_servers);
             if !dns.is_empty() {
                 options.push(ip_list_option(OPT_DNS_SERVER, dns));
             }
 
             // Domain name
-            let domain = overrides
-                .and_then(|o| o.domain.as_deref())
+            let domain = db_res
+                .as_ref()
+                .and_then(|r| r.domain.as_deref())
                 .unwrap_or(&pool.domain);
             if !domain.is_empty() {
                 options.push(string_option(OPT_DOMAIN_NAME, domain));
             }
         }
 
-        // Extended options (from per-reservation overrides)
-        if let Some(o) = overrides {
-            if let Some(ref ntp) = o.ntp_servers {
-                if !ntp.is_empty() {
-                    options.push(ip_list_option(OPT_NTP_SERVERS, ntp));
+        // Extended options from per-reservation overrides (read from DB)
+        if let Some(ref res) = db_res {
+            if let Some(ref ntp) = res.ntp_servers {
+                let addrs: Vec<Ipv4Addr> = ntp.iter().filter_map(|s| s.parse().ok()).collect();
+                if !addrs.is_empty() {
+                    options.push(ip_list_option(OPT_NTP_SERVERS, &addrs));
                 }
             }
-            if let Some(mtu) = o.mtu {
+            if let Some(mtu) = res.mtu {
                 options.push(u16_option(OPT_MTU, mtu));
             }
-            if let Some(ref domains) = o.domain_search {
+            if let Some(ref domains) = res.domain_search {
                 if !domains.is_empty() {
                     options.push(domain_search_option(domains));
                 }
             }
-            if let Some(ref routes) = o.static_routes {
-                if !routes.is_empty() {
-                    options.push(classless_static_routes_option(routes));
+            if let Some(ref routes) = res.static_routes {
+                let parsed: Vec<(String, Ipv4Addr)> = routes
+                    .iter()
+                    .filter_map(|r| r.gateway.parse().ok().map(|gw| (r.destination.clone(), gw)))
+                    .collect();
+                if !parsed.is_empty() {
+                    options.push(classless_static_routes_option(&parsed));
                 }
             }
-            if let Some(log_srv) = o.log_server {
-                options.push(ip_option(OPT_LOG_SERVER, log_srv));
+            if let Some(ref log_srv) = res.log_server {
+                if let Ok(addr) = log_srv.parse() {
+                    options.push(ip_option(OPT_LOG_SERVER, addr));
+                }
             }
-            if let Some(offset) = o.time_offset {
+            if let Some(offset) = res.time_offset {
                 options.push(i32_option(OPT_TIME_OFFSET, offset));
             }
-            if let Some(ref wpad) = o.wpad_url {
+            if let Some(ref wpad) = res.wpad_url {
                 options.push(string_option(OPT_WPAD, wpad));
             }
         }
@@ -910,17 +789,22 @@ impl Dhcpv4Server {
         let pool_pxe = self.pxe_configs.get(pxe_idx).and_then(|p| p.as_ref());
 
         // Build effective PXE config from per-reservation overrides or pool config
-        let effective_next_server = overrides
-            .and_then(|o| o.next_server)
+        let effective_next_server = db_res
+            .as_ref()
+            .and_then(|r| r.next_server.as_ref())
+            .and_then(|s| s.parse().ok())
             .or_else(|| pool_pxe.map(|p| p.next_server));
-        let effective_boot_file = overrides
-            .and_then(|o| o.boot_file.clone())
+        let effective_boot_file = db_res
+            .as_ref()
+            .and_then(|r| r.boot_file.clone())
             .or_else(|| pool_pxe.map(|p| p.boot_file.clone()));
-        let effective_boot_file_efi = overrides
-            .and_then(|o| o.boot_file_efi.clone())
+        let effective_boot_file_efi = db_res
+            .as_ref()
+            .and_then(|r| r.boot_file_efi.clone())
             .or_else(|| pool_pxe.and_then(|p| p.boot_file_efi.clone()));
-        let effective_ipxe_url = overrides
-            .and_then(|o| o.ipxe_boot_url.clone())
+        let effective_ipxe_url = db_res
+            .as_ref()
+            .and_then(|r| r.ipxe_boot_url.clone())
             .or_else(|| pool_pxe.and_then(|p| p.ipxe_boot_url.clone()));
 
         if let (Some(next_srv), Some(ref bf)) = (effective_next_server, &effective_boot_file) {
@@ -1011,6 +895,7 @@ impl Dhcpv4Server {
     /// Restore active leases and mark reservation IPs as allocated on startup.
     async fn restore_leases(&self) -> anyhow::Result<()> {
         let leases = self.lease_manager.list_active_leases()?;
+        let db_reservations = self.db.list_dhcp_reservations().unwrap_or_default();
         let mut pools = self.pools.lock().await;
 
         for lease in &leases {
@@ -1022,6 +907,14 @@ impl Dhcpv4Server {
         }
 
         // Pre-allocate all reservation IPs so they're never given to other clients
+        // (both DB reservations and config-file reservations)
+        for res in &db_reservations {
+            if let Ok(ip) = res.ip.parse::<Ipv4Addr>() {
+                for pool in pools.iter_mut() {
+                    pool.mark_allocated(ip);
+                }
+            }
+        }
         for (_mac, (ip, _hostname)) in &self.reservations {
             for pool in pools.iter_mut() {
                 pool.mark_allocated(*ip);
@@ -1029,8 +922,9 @@ impl Dhcpv4Server {
         }
 
         info!(
-            "restored {} active leases, {} reservations",
+            "restored {} active leases, {} DB reservations, {} config reservations",
             leases.len(),
+            db_reservations.len(),
             self.reservations.len()
         );
         Ok(())
@@ -1041,6 +935,7 @@ impl Dhcpv4Server {
     /// released by the client (most clients skip DHCP Release).
     async fn sync_pool(&self) -> anyhow::Result<()> {
         let active_leases = self.lease_manager.list_active_leases()?;
+        let db_reservations = self.db.list_dhcp_reservations().unwrap_or_default();
         let mut pools = self.pools.lock().await;
 
         for pool in pools.iter_mut() {
@@ -1056,7 +951,14 @@ impl Dhcpv4Server {
             }
         }
 
-        // Re-mark reservations (must never be handed out to other clients)
+        // Re-mark reservations from DB + config (must never be handed out to other clients)
+        for res in &db_reservations {
+            if let Ok(ip) = res.ip.parse::<Ipv4Addr>() {
+                for pool in pools.iter_mut() {
+                    pool.mark_allocated(ip);
+                }
+            }
+        }
         for (_mac, (ip, _hostname)) in &self.reservations {
             for pool in pools.iter_mut() {
                 pool.mark_allocated(*ip);
@@ -1067,7 +969,7 @@ impl Dhcpv4Server {
         debug!(
             "pool sync: {} active leases, {} reservations, {} available",
             active_leases.len(),
-            self.reservations.len(),
+            db_reservations.len() + self.reservations.len(),
             avail
         );
         Ok(())

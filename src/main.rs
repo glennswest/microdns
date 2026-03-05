@@ -139,10 +139,6 @@ async fn main() -> Result<()> {
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Reload channel — API sends signal on DHCP/forwarder mutations,
-    // DHCP server and recursor both listen for hot-reload
-    let (reload_tx, _reload_rx) = watch::channel(());
-
     let mut tasks = Vec::new();
 
     // Initialize message bus
@@ -281,8 +277,7 @@ async fn main() -> Result<()> {
             let server = microdns_recursor::RecursorServer::new(
                 recursor_config,
                 Some(db.clone()),
-            )?
-            .with_reload(reload_tx.subscribe());
+            )?;
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = server.run(rx).await {
@@ -354,7 +349,6 @@ async fn main() -> Result<()> {
                     server = server.with_dns_registrar(registrar.clone());
                 }
                 server = server.with_message_bus(message_bus.clone(), &config.instance.id);
-                server = server.with_reload(reload_tx.subscribe());
                 let rx = shutdown_rx.clone();
                 tasks.push(tokio::spawn(async move {
                     if let Err(e) = server.run(rx).await {
@@ -485,8 +479,7 @@ async fn main() -> Result<()> {
                 .with_peers(config.instance.peers.clone())
                 .with_dhcp_status(dhcp_status)
                 .with_log_buffer(log_buffer.clone())
-                .with_dashboard_addr(dashboard_addr)
-                .with_reload_tx(reload_tx.clone());
+                .with_dashboard_addr(dashboard_addr);
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());

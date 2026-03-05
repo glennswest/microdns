@@ -40,7 +40,6 @@ pub struct ApiServer {
     dhcp_status: DhcpStatusConfig,
     log_buffer: Option<Arc<LogBuffer>>,
     message_bus: Option<Arc<dyn MessageBus>>,
-    dhcp_reload_tx: watch::Sender<()>,
     event_tx: broadcast::Sender<DashboardEvent>,
 }
 
@@ -68,13 +67,11 @@ pub struct AppState {
     pub dhcp_status: DhcpStatusConfig,
     pub log_buffer: Option<Arc<LogBuffer>>,
     pub message_bus: Option<Arc<dyn MessageBus>>,
-    pub dhcp_reload_tx: watch::Sender<()>,
     pub event_tx: broadcast::Sender<DashboardEvent>,
 }
 
 impl ApiServer {
     pub fn new(listen_addr: SocketAddr, db: Db, api_key: Option<String>) -> Self {
-        let (dhcp_reload_tx, _) = watch::channel(());
         let (event_tx, _) = broadcast::channel(256);
         Self {
             listen_addr,
@@ -88,7 +85,6 @@ impl ApiServer {
             dhcp_status: DhcpStatusConfig::default(),
             log_buffer: None,
             message_bus: None,
-            dhcp_reload_tx,
             event_tx,
         }
     }
@@ -96,18 +92,6 @@ impl ApiServer {
     pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
         self.message_bus = Some(bus);
         self
-    }
-
-    /// Use an external reload channel instead of the internal one.
-    /// This allows the API server, DHCP server, and recursor to share
-    /// the same reload signal.
-    pub fn with_reload_tx(mut self, tx: watch::Sender<()>) -> Self {
-        self.dhcp_reload_tx = tx;
-        self
-    }
-
-    pub fn dhcp_reload_rx(&self) -> watch::Receiver<()> {
-        self.dhcp_reload_tx.subscribe()
     }
 
     pub fn event_rx(&self) -> broadcast::Receiver<DashboardEvent> {
@@ -161,7 +145,6 @@ impl ApiServer {
             dhcp_status: self.dhcp_status,
             log_buffer: self.log_buffer,
             message_bus: self.message_bus,
-            dhcp_reload_tx: self.dhcp_reload_tx,
             event_tx: self.event_tx,
         };
 

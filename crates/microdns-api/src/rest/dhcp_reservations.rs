@@ -136,7 +136,6 @@ async fn create_reservation(
         .create_dhcp_reservation(&res)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
 
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DhcpReservationChanged {
         action: "ADDED".to_string(),
         mac: res.mac.clone(),
@@ -190,7 +189,6 @@ async fn patch_reservation(
 
     state.db.update_dhcp_reservation(&res).map_err(internal_error)?;
 
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DhcpReservationChanged {
         action: "MODIFIED".to_string(),
         mac: res.mac.clone(),
@@ -227,7 +225,6 @@ async fn delete_reservation(
         .delete_dhcp_reservation(&mac)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DhcpReservationChanged {
         action: "DELETED".to_string(),
         mac: mac.clone(),

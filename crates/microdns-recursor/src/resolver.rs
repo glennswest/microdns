@@ -7,8 +7,7 @@ use microdns_core::db::Db;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// The recursive resolver. Handles incoming queries by:
 /// 1. Checking local authoritative zones (if db is provided)
@@ -16,7 +15,8 @@ use tracing::{debug, info, warn};
 /// 3. Forwarding to upstream servers (forward zones or general recursion)
 pub struct Resolver {
     cache: Arc<DnsCache>,
-    forward_table: Arc<RwLock<ForwardTable>>,
+    /// Static forward table (from config file, used as fallback when DB has no forwarders)
+    forward_table: Arc<ForwardTable>,
     db: Option<Db>,
     /// Upstream resolvers for general recursion (e.g., 8.8.8.8, 1.1.1.1)
     upstream: Vec<SocketAddr>,
@@ -25,7 +25,7 @@ pub struct Resolver {
 impl Resolver {
     pub fn new(
         cache: Arc<DnsCache>,
-        forward_table: Arc<RwLock<ForwardTable>>,
+        forward_table: Arc<ForwardTable>,
         db: Option<Db>,
     ) -> Self {
         // Default upstream resolvers
@@ -43,11 +43,29 @@ impl Resolver {
         }
     }
 
-    /// Replace the forward table with a new one (hot-reload).
-    pub async fn update_forward_table(&self, table: ForwardTable) {
-        let mut ft = self.forward_table.write().await;
-        *ft = table;
-        info!("forward table reloaded");
+    /// Find forward servers for a FQDN. Checks database first (live data),
+    /// falls back to static config forward table.
+    fn find_forward_servers(&self, qname: &str) -> Option<Vec<SocketAddr>> {
+        // Database forwarders take priority (always live, no reload needed)
+        if let Some(ref db) = self.db {
+            if let Some(servers) = db.find_forward_servers(qname) {
+                let addrs: Vec<SocketAddr> = servers
+                    .iter()
+                    .filter_map(|a| {
+                        if a.contains(':') {
+                            a.parse().ok()
+                        } else {
+                            format!("{a}:53").parse().ok()
+                        }
+                    })
+                    .collect();
+                if !addrs.is_empty() {
+                    return Some(addrs);
+                }
+            }
+        }
+        // Fall back to static forward table from config
+        self.forward_table.lookup(qname).map(|s| s.to_vec())
     }
 
     /// Resolve a DNS query from raw bytes. Returns the response bytes.
@@ -72,14 +90,9 @@ impl Resolver {
         debug!("recursor query: {} {}", qname, qtype);
 
         // Step 1: Check local authoritative zones (skip if zone is in forward table)
-        let in_forward_table = {
-            let ft = self.forward_table.read().await;
-            ft.lookup(&qname_lower).is_some()
-        };
-
         if let Some(ref db) = self.db {
-            let lower = LowerName::from(qname.clone());
-            if !in_forward_table {
+            if self.find_forward_servers(&qname_lower).is_none() {
+                let lower = LowerName::from(qname.clone());
                 if let Ok(Some(_zone)) = db.find_zone_for_fqdn(&qname_lower) {
                     debug!("resolving {} {} from local auth zone", qname, qtype);
                     return self.resolve_from_local(db, &request, &lower, qtype, true);
@@ -100,14 +113,8 @@ impl Resolver {
             return Ok(self.rewrite_response_id(&cached_bytes, request.id()));
         }
 
-        // Step 3: Check forward zones (with local fallback on failure)
-        // Clone servers to avoid holding the read lock across the async forward_query
-        let forward_servers = {
-            let ft = self.forward_table.read().await;
-            ft.lookup(&qname_lower).map(|s| s.to_vec())
-        };
-
-        if let Some(servers) = forward_servers {
+        // Step 3: Check forward zones (reads from database, falls back to static config)
+        if let Some(servers) = self.find_forward_servers(&qname_lower) {
             debug!("forwarding {} {} to forward zone servers", qname, qtype);
             let result = self.forward_query(data, &request, &servers, &cache_key).await?;
 

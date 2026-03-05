@@ -59,7 +59,6 @@ async fn create_forwarder(
     state.db.create_dns_forwarder(&fwd).map_err(internal_error)?;
 
     // Signal recursor reload
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DnsForwarderChanged {
         action: "ADDED".to_string(),
         zone: fwd.zone.clone(),
@@ -86,7 +85,6 @@ async fn delete_forwarder(
         .delete_dns_forwarder(&zone)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
-    let _ = state.dhcp_reload_tx.send(());
     let _ = state.event_tx.send(DashboardEvent::DnsForwarderChanged {
         action: "DELETED".to_string(),
         zone: zone.clone(),

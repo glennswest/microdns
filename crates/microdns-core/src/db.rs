@@ -883,6 +883,23 @@ impl Db {
         Ok(result)
     }
 
+    /// Find the most-specific forward zone matching a FQDN and return its servers.
+    /// Used by the recursor to decide whether to forward a query.
+    pub fn find_forward_servers(&self, qname: &str) -> Option<Vec<String>> {
+        let forwarders = self.list_dns_forwarders().ok()?;
+        let qname = qname.trim_end_matches('.').to_lowercase();
+        let mut best: Option<(Vec<String>, usize)> = None;
+        for fwd in &forwarders {
+            let zone = fwd.zone.trim_end_matches('.').to_lowercase();
+            if qname == zone || qname.ends_with(&format!(".{}", zone)) {
+                if best.as_ref().map_or(true, |(_, s)| zone.len() > *s) {
+                    best = Some((fwd.servers.clone(), zone.len()));
+                }
+            }
+        }
+        best.map(|(servers, _)| servers)
+    }
+
     pub fn delete_dns_forwarder(&self, zone: &str) -> Result<()> {
         let zone = zone.trim_end_matches('.').to_lowercase();
         let write_txn = self.inner.begin_write()?;
