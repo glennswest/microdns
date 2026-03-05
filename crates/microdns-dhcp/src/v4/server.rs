@@ -4,6 +4,7 @@ use crate::v4::packet::*;
 use crate::v4::pool::{prefix_len_from_subnet, subnet_mask_from_prefix, Ipv4Pool};
 use microdns_core::config::{DhcpMode, DhcpV4Config};
 use microdns_core::db::Db;
+use microdns_core::types::DhcpDbReservation;
 use microdns_msg::events::Event;
 use microdns_msg::MessageBus;
 use std::collections::HashMap;
@@ -25,19 +26,44 @@ struct PxeConfig {
     ipxe_boot_url: Option<String>,
 }
 
+/// Per-reservation option overrides (loaded from DB)
+#[derive(Debug, Clone, Default)]
+pub struct ReservationOverrides {
+    pub gateway: Option<Ipv4Addr>,
+    pub dns_servers: Option<Vec<Ipv4Addr>>,
+    pub domain: Option<String>,
+    pub ntp_servers: Option<Vec<Ipv4Addr>>,
+    pub domain_search: Option<Vec<String>>,
+    pub mtu: Option<u16>,
+    pub next_server: Option<Ipv4Addr>,
+    pub boot_file: Option<String>,
+    pub boot_file_efi: Option<String>,
+    pub ipxe_boot_url: Option<String>,
+    pub static_routes: Option<Vec<(String, Ipv4Addr)>>,
+    pub log_server: Option<Ipv4Addr>,
+    pub time_offset: Option<i32>,
+    pub wpad_url: Option<String>,
+    pub lease_time_secs: Option<u32>,
+}
+
 pub struct Dhcpv4Server {
-    _config: DhcpV4Config,
+    _config: Option<DhcpV4Config>,
+    db: Db,
     mode: DhcpMode,
     pools: Arc<Mutex<Vec<Ipv4Pool>>>,
     /// PXE config per pool index
     pxe_configs: Vec<Option<PxeConfig>>,
     /// MAC → (IP, hostname) reservations
     reservations: HashMap<String, (Ipv4Addr, Option<String>)>,
+    /// Per-reservation overrides (MAC → overrides)
+    reservation_overrides: HashMap<String, ReservationOverrides>,
     server_ip: Ipv4Addr,
     lease_manager: Arc<LeaseManager>,
     dns_registrar: Option<Arc<DnsRegistrar>>,
     message_bus: Option<Arc<dyn MessageBus>>,
     instance_id: String,
+    /// Watch channel for hot-reload signals from API
+    reload_rx: Option<watch::Receiver<()>>,
 }
 
 impl Dhcpv4Server {
@@ -96,20 +122,150 @@ impl Dhcpv4Server {
             .or_else(|| pools.first().map(|p| p.gateway))
             .unwrap_or(Ipv4Addr::UNSPECIFIED);
 
-        let lease_manager = Arc::new(LeaseManager::new(db));
+        let lease_manager = Arc::new(LeaseManager::new(db.clone()));
 
         Ok(Self {
-            _config: config.clone(),
+            _config: Some(config.clone()),
+            db,
             mode: config.mode,
             pools: Arc::new(Mutex::new(pools)),
             pxe_configs,
             reservations,
+            reservation_overrides: HashMap::new(),
             server_ip,
             lease_manager,
             dns_registrar: None,
             message_bus: None,
             instance_id: String::new(),
+            reload_rx: None,
         })
+    }
+
+    /// Create a DHCP server that loads pools and reservations from the database.
+    /// Accepts an optional reload watch channel — when signaled, the server
+    /// re-reads pools and reservations from DB without restart.
+    pub fn from_db(
+        db: Db,
+        mode: DhcpMode,
+        server_ip: Option<Ipv4Addr>,
+        reload_rx: Option<watch::Receiver<()>>,
+    ) -> anyhow::Result<Self> {
+        let (pools, pxe_configs, reservations, reservation_overrides, effective_server_ip) =
+            Self::load_from_db(&db, server_ip)?;
+
+        let lease_manager = Arc::new(LeaseManager::new(db.clone()));
+
+        Ok(Self {
+            _config: None,
+            db,
+            mode,
+            pools: Arc::new(Mutex::new(pools)),
+            pxe_configs,
+            reservations,
+            reservation_overrides,
+            server_ip: effective_server_ip,
+            lease_manager,
+            dns_registrar: None,
+            message_bus: None,
+            instance_id: String::new(),
+            reload_rx,
+        })
+    }
+
+    /// Load pools and reservations from database
+    fn load_from_db(
+        db: &Db,
+        server_ip_override: Option<Ipv4Addr>,
+    ) -> anyhow::Result<(
+        Vec<Ipv4Pool>,
+        Vec<Option<PxeConfig>>,
+        HashMap<String, (Ipv4Addr, Option<String>)>,
+        HashMap<String, ReservationOverrides>,
+        Ipv4Addr,
+    )> {
+        let db_pools = db.list_dhcp_pools().unwrap_or_default();
+        let db_reservations = db.list_dhcp_reservations().unwrap_or_default();
+
+        let mut pools = Vec::new();
+        let mut pxe_configs = Vec::new();
+
+        for pool_cfg in &db_pools {
+            let prefix_len = prefix_len_from_subnet(&pool_cfg.subnet).unwrap_or(24);
+            let mask = subnet_mask_from_prefix(prefix_len);
+            let dns_servers: Vec<Ipv4Addr> = pool_cfg
+                .dns_servers
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+
+            pools.push(Ipv4Pool::new(
+                pool_cfg.range_start.parse()?,
+                pool_cfg.range_end.parse()?,
+                mask,
+                pool_cfg.gateway.parse()?,
+                dns_servers,
+                pool_cfg.domain.clone(),
+                pool_cfg.lease_time_secs as u32,
+            ));
+
+            let pxe = match (&pool_cfg.next_server, &pool_cfg.boot_file) {
+                (Some(ns), Some(bf)) => Some(PxeConfig {
+                    next_server: ns.parse()?,
+                    boot_file: bf.clone(),
+                    boot_file_efi: pool_cfg.boot_file_efi.clone(),
+                    ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
+                }),
+                _ => None,
+            };
+            pxe_configs.push(pxe);
+        }
+
+        let mut reservations = HashMap::new();
+        let mut reservation_overrides = HashMap::new();
+
+        for res in &db_reservations {
+            let mac = res.mac.to_lowercase();
+            let ip: Ipv4Addr = res.ip.parse()?;
+            reservations.insert(mac.clone(), (ip, res.hostname.clone()));
+            reservation_overrides.insert(mac, Self::build_overrides(res));
+        }
+
+        let server_ip = server_ip_override
+            .or_else(|| pools.first().map(|p| p.gateway))
+            .unwrap_or(Ipv4Addr::UNSPECIFIED);
+
+        Ok((pools, pxe_configs, reservations, reservation_overrides, server_ip))
+    }
+
+    fn build_overrides(res: &DhcpDbReservation) -> ReservationOverrides {
+        ReservationOverrides {
+            gateway: res.gateway.as_ref().and_then(|s| s.parse().ok()),
+            dns_servers: res.dns_servers.as_ref().map(|v| {
+                v.iter().filter_map(|s| s.parse().ok()).collect()
+            }),
+            domain: res.domain.clone(),
+            ntp_servers: res.ntp_servers.as_ref().map(|v| {
+                v.iter().filter_map(|s| s.parse().ok()).collect()
+            }),
+            domain_search: res.domain_search.clone(),
+            mtu: res.mtu,
+            next_server: res.next_server.as_ref().and_then(|s| s.parse().ok()),
+            boot_file: res.boot_file.clone(),
+            boot_file_efi: res.boot_file_efi.clone(),
+            ipxe_boot_url: res.ipxe_boot_url.clone(),
+            static_routes: res.static_routes.as_ref().map(|routes| {
+                routes
+                    .iter()
+                    .filter_map(|r| {
+                        r.gateway.parse::<Ipv4Addr>().ok().map(|gw| (r.destination.clone(), gw))
+                    })
+                    .collect()
+            }),
+            log_server: res.log_server.as_ref().and_then(|s| s.parse().ok()),
+            time_offset: res.time_offset,
+            wpad_url: res.wpad_url.clone(),
+            lease_time_secs: res.lease_time_secs.map(|v| v as u32),
+        }
     }
 
     pub fn with_dns_registrar(mut self, registrar: Arc<DnsRegistrar>) -> Self {
@@ -123,9 +279,44 @@ impl Dhcpv4Server {
         self
     }
 
-    pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let ports = &self._config.listen_ports;
-        let primary_port = ports.first().copied().unwrap_or(67);
+    pub fn with_reload(mut self, reload_rx: watch::Receiver<()>) -> Self {
+        self.reload_rx = Some(reload_rx);
+        self
+    }
+
+    /// Reload pools and reservations from database. Called when API signals a change.
+    async fn reload_from_db(&mut self) {
+        let server_ip_override = if self.server_ip != Ipv4Addr::UNSPECIFIED {
+            Some(self.server_ip)
+        } else {
+            None
+        };
+
+        match Self::load_from_db(&self.db, server_ip_override) {
+            Ok((new_pools, new_pxe, new_res, new_overrides, new_server_ip)) => {
+                {
+                    let mut pools = self.pools.lock().await;
+                    *pools = new_pools;
+                }
+                self.pxe_configs = new_pxe;
+                self.reservations = new_res;
+                self.reservation_overrides = new_overrides;
+                self.server_ip = new_server_ip;
+                info!("DHCP: reloaded {} pools, {} reservations from database",
+                    self.pxe_configs.len(), self.reservations.len());
+            }
+            Err(e) => {
+                error!("DHCP: failed to reload from database: {e}");
+            }
+        }
+    }
+
+    pub async fn run(mut self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
+        let primary_port = self
+            ._config
+            .as_ref()
+            .and_then(|c| c.listen_ports.first().copied())
+            .unwrap_or(67);
 
         info!(
             "DHCPv4 server listening on 0.0.0.0:{primary_port} (mode: {:?})",
@@ -144,7 +335,7 @@ impl Dhcpv4Server {
     /// Normal mode: accept all DHCP packets (broadcast and relay).
     /// Single persistent socket, no deadman timer, no veth workarounds.
     async fn run_normal(
-        &self,
+        &mut self,
         port: u16,
         mut shutdown: watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
@@ -164,11 +355,29 @@ impl Dhcpv4Server {
         let mut pool_sync = tokio::time::interval(Duration::from_secs(60));
 
         loop {
+            // Build a future for the optional reload channel
+            let reload_changed = async {
+                if let Some(ref mut rx) = self.reload_rx {
+                    let _ = rx.changed().await;
+                } else {
+                    // Never resolves
+                    std::future::pending::<()>().await;
+                }
+            };
+
             let recv_result = tokio::select! {
                 r = socket.recv_from(&mut buf) => r,
                 _ = pool_sync.tick() => {
                     if let Err(e) = self.sync_pool().await {
                         warn!("pool sync error: {e}");
+                    }
+                    continue;
+                }
+                _ = reload_changed => {
+                    self.reload_from_db().await;
+                    // Re-sync pools after reload
+                    if let Err(e) = self.sync_pool().await {
+                        warn!("pool sync error after reload: {e}");
                     }
                     continue;
                 }
@@ -237,7 +446,7 @@ impl Dhcpv4Server {
     /// Includes veth deadman timer and socket recycling to work around
     /// RouterOS container networking bugs.
     async fn run_gateway(
-        &self,
+        &mut self,
         port: u16,
         mut shutdown: watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
@@ -258,11 +467,26 @@ impl Dhcpv4Server {
             loop {
                 let deadline = last_relay_packet + Duration::from_secs(30);
 
+                let reload_changed = async {
+                    if let Some(ref mut rx) = self.reload_rx {
+                        let _ = rx.changed().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+
                 let recv_result = tokio::select! {
                     r = recv_socket.recv_from(&mut buf) => r,
                     _ = pool_sync.tick() => {
                         if let Err(e) = self.sync_pool().await {
                             warn!("pool sync error: {e}");
+                        }
+                        continue;
+                    }
+                    _ = reload_changed => {
+                        self.reload_from_db().await;
+                        if let Err(e) = self.sync_pool().await {
+                            warn!("pool sync error after reload: {e}");
                         }
                         continue;
                     }
@@ -601,6 +825,9 @@ impl Dhcpv4Server {
         ip: Ipv4Addr,
         msg_type: DhcpMessageType,
     ) -> DhcpPacket {
+        let mac = request.mac_address();
+        let overrides = self.reservation_overrides.get(&mac);
+
         let pools = self.pools.lock().await;
         let pool_idx = pools.iter().position(|p| p.contains(ip));
         let pool = pool_idx.map(|i| &pools[i]);
@@ -617,30 +844,92 @@ impl Dhcpv4Server {
 
         if let Some(pool) = effective_pool {
             options.push(ip_option(OPT_SUBNET_MASK, pool.subnet_mask));
-            options.push(ip_option(OPT_ROUTER, pool.gateway));
-            options.push(u32_option(OPT_LEASE_TIME, pool.lease_time_secs));
 
-            if !pool.dns_servers.is_empty() {
-                options.push(ip_list_option(OPT_DNS_SERVER, &pool.dns_servers));
+            // Gateway: per-reservation override or pool default
+            let gw = overrides.and_then(|o| o.gateway).unwrap_or(pool.gateway);
+            options.push(ip_option(OPT_ROUTER, gw));
+
+            // Lease time: per-reservation override or pool default
+            let lease_time = overrides
+                .and_then(|o| o.lease_time_secs)
+                .unwrap_or(pool.lease_time_secs);
+            options.push(u32_option(OPT_LEASE_TIME, lease_time));
+
+            // DNS servers
+            let dns = overrides
+                .and_then(|o| o.dns_servers.as_ref())
+                .unwrap_or(&pool.dns_servers);
+            if !dns.is_empty() {
+                options.push(ip_list_option(OPT_DNS_SERVER, dns));
             }
 
-            if !pool.domain.is_empty() {
-                options.push(string_option(OPT_DOMAIN_NAME, &pool.domain));
+            // Domain name
+            let domain = overrides
+                .and_then(|o| o.domain.as_deref())
+                .unwrap_or(&pool.domain);
+            if !domain.is_empty() {
+                options.push(string_option(OPT_DOMAIN_NAME, domain));
+            }
+        }
+
+        // Extended options (from per-reservation overrides)
+        if let Some(o) = overrides {
+            if let Some(ref ntp) = o.ntp_servers {
+                if !ntp.is_empty() {
+                    options.push(ip_list_option(OPT_NTP_SERVERS, ntp));
+                }
+            }
+            if let Some(mtu) = o.mtu {
+                options.push(u16_option(OPT_MTU, mtu));
+            }
+            if let Some(ref domains) = o.domain_search {
+                if !domains.is_empty() {
+                    options.push(domain_search_option(domains));
+                }
+            }
+            if let Some(ref routes) = o.static_routes {
+                if !routes.is_empty() {
+                    options.push(classless_static_routes_option(routes));
+                }
+            }
+            if let Some(log_srv) = o.log_server {
+                options.push(ip_option(OPT_LOG_SERVER, log_srv));
+            }
+            if let Some(offset) = o.time_offset {
+                options.push(i32_option(OPT_TIME_OFFSET, offset));
+            }
+            if let Some(ref wpad) = o.wpad_url {
+                options.push(string_option(OPT_WPAD, wpad));
             }
         }
 
         // PXE boot options — detect iPXE clients via option 175 (iPXE
         // encapsulated options, always sent by iPXE) or user-class "iPXE".
+        // Per-reservation PXE overrides take precedence over pool PXE config.
         let pxe_idx = pool_idx.unwrap_or(0);
-        if let Some(Some(ref pxe)) = self.pxe_configs.get(pxe_idx) {
+        let pool_pxe = self.pxe_configs.get(pxe_idx).and_then(|p| p.as_ref());
+
+        // Build effective PXE config from per-reservation overrides or pool config
+        let effective_next_server = overrides
+            .and_then(|o| o.next_server)
+            .or_else(|| pool_pxe.map(|p| p.next_server));
+        let effective_boot_file = overrides
+            .and_then(|o| o.boot_file.clone())
+            .or_else(|| pool_pxe.map(|p| p.boot_file.clone()));
+        let effective_boot_file_efi = overrides
+            .and_then(|o| o.boot_file_efi.clone())
+            .or_else(|| pool_pxe.and_then(|p| p.boot_file_efi.clone()));
+        let effective_ipxe_url = overrides
+            .and_then(|o| o.ipxe_boot_url.clone())
+            .or_else(|| pool_pxe.and_then(|p| p.ipxe_boot_url.clone()));
+
+        if let (Some(next_srv), Some(ref bf)) = (effective_next_server, &effective_boot_file) {
             let is_ipxe = request.get_option(OPT_IPXE_ENCAP).is_some()
                 || request
                     .get_option(OPT_USER_CLASS)
                     .map(|d| d.windows(4).any(|w| w == b"iPXE"))
                     .unwrap_or(false);
 
-            // Detect UEFI clients via option 93 (Client System Architecture Type)
-            // Values: 0=BIOS, 6=EFI IA32, 7=EFI x64 (BC), 9=EFI x64, 10=EFI ARM32, 11=EFI ARM64
             let is_efi = request
                 .get_option(OPT_CLIENT_ARCH)
                 .map(|d| {
@@ -654,37 +943,35 @@ impl Dhcpv4Server {
                 .unwrap_or(false);
 
             let boot_file = if is_ipxe {
-                if let Some(ref url) = pxe.ipxe_boot_url {
+                if let Some(ref url) = effective_ipxe_url {
                     info!("iPXE client detected, serving boot URL: {}", url);
                     url.as_str()
                 } else {
-                    &pxe.boot_file
+                    bf.as_str()
                 }
             } else if is_efi {
-                if let Some(ref efi_file) = pxe.boot_file_efi {
+                if let Some(ref efi_file) = effective_boot_file_efi {
                     info!("UEFI client detected, serving EFI boot file: {}", efi_file);
                     efi_file.as_str()
                 } else {
                     warn!("UEFI client detected but no boot_file_efi configured, falling back to BIOS boot file");
-                    &pxe.boot_file
+                    bf.as_str()
                 }
             } else {
-                &pxe.boot_file
+                bf.as_str()
             };
 
-            // Only set siaddr/sname for TFTP boots (non-iPXE)
             if !is_ipxe {
-                siaddr = pxe.next_server;
-                let ns_str = pxe.next_server.to_string();
+                siaddr = next_srv;
+                let ns_str = next_srv.to_string();
                 let ns_bytes = ns_str.as_bytes();
                 let len = ns_bytes.len().min(63);
                 sname[..len].copy_from_slice(&ns_bytes[..len]);
-                options.push(string_option(OPT_TFTP_SERVER, &pxe.next_server.to_string()));
+                options.push(string_option(OPT_TFTP_SERVER, &next_srv.to_string()));
             }
 
             options.push(string_option(OPT_BOOTFILE, boot_file));
 
-            // Populate file field with boot filename
             let bf_bytes = boot_file.as_bytes();
             let len = bf_bytes.len().min(127);
             file[..len].copy_from_slice(&bf_bytes[..len]);
@@ -695,10 +982,7 @@ impl Dhcpv4Server {
             data: Vec::new(),
         });
 
-        // When responding via relay (giaddr set), force broadcast flag so the
-        // relay broadcasts the response to the client. Without this, the relay
-        // tries to unicast to yiaddr which fails because the client has no ARP
-        // entry for that IP yet.
+        // When responding via relay (giaddr set), force broadcast flag
         let flags = if request.giaddr != Ipv4Addr::UNSPECIFIED {
             request.flags | 0x8000
         } else {

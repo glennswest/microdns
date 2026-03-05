@@ -32,10 +32,14 @@ impl DhcpMessageType {
 
 /// DHCP option codes
 pub const OPT_SUBNET_MASK: u8 = 1;
+pub const OPT_TIME_OFFSET: u8 = 2;
 pub const OPT_ROUTER: u8 = 3;
 pub const OPT_DNS_SERVER: u8 = 6;
+pub const OPT_LOG_SERVER: u8 = 7;
 pub const OPT_HOSTNAME: u8 = 12;
 pub const OPT_DOMAIN_NAME: u8 = 15;
+pub const OPT_MTU: u8 = 26;
+pub const OPT_NTP_SERVERS: u8 = 42;
 pub const OPT_REQUESTED_IP: u8 = 50;
 pub const OPT_LEASE_TIME: u8 = 51;
 pub const OPT_MESSAGE_TYPE: u8 = 53;
@@ -45,7 +49,10 @@ pub const OPT_TFTP_SERVER: u8 = 66;
 pub const OPT_BOOTFILE: u8 = 67;
 pub const OPT_USER_CLASS: u8 = 77;
 pub const OPT_CLIENT_ARCH: u8 = 93;
+pub const OPT_DOMAIN_SEARCH: u8 = 119;
+pub const OPT_CLASSLESS_STATIC_ROUTES: u8 = 121;
 pub const OPT_IPXE_ENCAP: u8 = 175;
+pub const OPT_WPAD: u8 = 252;
 pub const OPT_END: u8 = 255;
 
 /// Magic cookie for DHCP options
@@ -290,6 +297,65 @@ pub fn string_option(code: u8, s: &str) -> DhcpOption {
     DhcpOption {
         code,
         data: s.as_bytes().to_vec(),
+    }
+}
+
+/// Build a DHCP option with a u16 value (e.g., MTU).
+pub fn u16_option(code: u8, val: u16) -> DhcpOption {
+    DhcpOption {
+        code,
+        data: val.to_be_bytes().to_vec(),
+    }
+}
+
+/// Build a DHCP option with an i32 value (e.g., time offset).
+pub fn i32_option(code: u8, val: i32) -> DhcpOption {
+    DhcpOption {
+        code,
+        data: val.to_be_bytes().to_vec(),
+    }
+}
+
+/// Build a DNS domain search list option (RFC 3397, option 119).
+/// Each domain is encoded as a sequence of length-prefixed labels terminated by a zero byte.
+pub fn domain_search_option(domains: &[String]) -> DhcpOption {
+    let mut data = Vec::new();
+    for domain in domains {
+        for label in domain.split('.') {
+            if !label.is_empty() {
+                data.push(label.len() as u8);
+                data.extend_from_slice(label.as_bytes());
+            }
+        }
+        data.push(0); // root label
+    }
+    DhcpOption {
+        code: OPT_DOMAIN_SEARCH,
+        data,
+    }
+}
+
+/// Build a classless static routes option (RFC 3442, option 121).
+/// Each route is encoded as: prefix_len (1 byte), destination (variable), gateway (4 bytes).
+pub fn classless_static_routes_option(routes: &[(String, Ipv4Addr)]) -> DhcpOption {
+    let mut data = Vec::new();
+    for (cidr, gateway) in routes {
+        let parts: Vec<&str> = cidr.split('/').collect();
+        let prefix_len: u8 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(32);
+        data.push(prefix_len);
+
+        // Number of significant octets
+        let octets_needed = ((prefix_len + 7) / 8) as usize;
+        if let Ok(dest) = parts[0].parse::<Ipv4Addr>() {
+            let dest_bytes = dest.octets();
+            data.extend_from_slice(&dest_bytes[..octets_needed]);
+        }
+
+        data.extend_from_slice(&gateway.octets());
+    }
+    DhcpOption {
+        code: OPT_CLASSLESS_STATIC_ROUTES,
+        data,
     }
 }
 
