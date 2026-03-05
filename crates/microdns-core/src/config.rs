@@ -144,6 +144,7 @@ pub struct DhcpV4Config {
     /// (server identifier). If not set, falls back to the first pool's gateway.
     #[serde(default)]
     pub server_ip: Option<String>,
+    #[serde(default)]
     pub pools: Vec<DhcpV4Pool>,
     #[serde(default)]
     pub reservations: Vec<DhcpReservation>,
