@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::{AppState, MAX_WS_CONNECTIONS};
+use crate::{AppState, DashboardEvent, MAX_WS_CONNECTIONS};
 
 const LEASES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("leases");
 
@@ -25,6 +25,15 @@ pub async fn ws_handler(
     }
     state.ws_connections.fetch_add(1, Ordering::Relaxed);
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+#[derive(Serialize)]
+#[serde(tag = "msg_type")]
+enum WsMessage {
+    #[serde(rename = "snapshot")]
+    Snapshot(DashboardUpdate),
+    #[serde(rename = "event")]
+    Event { event: DashboardEvent },
 }
 
 #[derive(Serialize)]
@@ -59,20 +68,38 @@ struct InstanceInfo {
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut interval = tokio::time::interval(Duration::from_secs(2));
+    let mut event_rx = state.event_tx.subscribe();
 
     loop {
-        interval.tick().await;
-
-        let update = gather_dashboard_data(&state).await;
-
-        let json = match serde_json::to_string(&update) {
-            Ok(j) if j.len() <= MAX_WS_MESSAGE_SIZE => j,
-            Ok(_) => continue, // skip oversized messages
-            Err(_) => continue,
-        };
-
-        if socket.send(Message::Text(json.into())).await.is_err() {
-            break;
+        tokio::select! {
+            _ = interval.tick() => {
+                let update = gather_dashboard_data(&state).await;
+                let msg = WsMessage::Snapshot(update);
+                let json = match serde_json::to_string(&msg) {
+                    Ok(j) if j.len() <= MAX_WS_MESSAGE_SIZE => j,
+                    _ => continue,
+                };
+                if socket.send(Message::Text(json.into())).await.is_err() {
+                    break;
+                }
+            }
+            result = event_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        let msg = WsMessage::Event { event };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            if socket.send(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed some events, continue
+                        continue;
+                    }
+                    Err(_) => break, // Channel closed
+                }
+            }
         }
     }
 
