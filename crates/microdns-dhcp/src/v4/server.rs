@@ -843,6 +843,14 @@ impl Dhcpv4Server {
             .and_then(|r| r.root_path.clone())
             .or_else(|| pool_pxe.and_then(|p| p.root_path.clone()));
 
+        // Option 17 (root-path) — always send when set, independent of PXE
+        // boot chain config. Used by iPXE for direct sanboot from iSCSI target.
+        // Standard DHCP option, safe for all clients (non-iPXE clients ignore it).
+        if let Some(ref rp) = effective_root_path {
+            info!("serving root-path option 17: {}", rp);
+            options.push(string_option(OPT_ROOT_PATH, rp));
+        }
+
         if let (Some(next_srv), Some(ref bf)) = (effective_next_server, &effective_boot_file) {
             let is_ipxe = request.get_option(OPT_IPXE_ENCAP).is_some()
                 || request
@@ -861,14 +869,6 @@ impl Dhcpv4Server {
                     }
                 })
                 .unwrap_or(false);
-
-            // Option 17 (root-path) — always send when set. Used by iPXE for
-            // direct sanboot from iSCSI target. Standard DHCP option, safe for
-            // all clients (non-iPXE clients simply ignore it).
-            if let Some(ref rp) = effective_root_path {
-                info!("serving root-path option 17: {}", rp);
-                options.push(string_option(OPT_ROOT_PATH, rp));
-            }
 
             let boot_file = if is_ipxe {
                 if effective_root_path.is_some() {
