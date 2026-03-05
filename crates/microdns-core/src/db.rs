@@ -1211,6 +1211,7 @@ mod tests {
             boot_file: None,
             boot_file_efi: None,
             ipxe_boot_url: None,
+            root_path: None,
             ntp_servers: None,
             domain_search: None,
             mtu: None,

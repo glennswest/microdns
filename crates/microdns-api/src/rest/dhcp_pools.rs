@@ -41,6 +41,8 @@ struct CreatePoolRequest {
     #[serde(default)]
     ipxe_boot_url: Option<String>,
     #[serde(default)]
+    root_path: Option<String>,
+    #[serde(default)]
     ntp_servers: Option<Vec<String>>,
     #[serde(default)]
     domain_search: Option<Vec<String>>,
@@ -74,6 +76,7 @@ struct PatchPoolRequest {
     boot_file: Option<Option<String>>,
     boot_file_efi: Option<Option<String>>,
     ipxe_boot_url: Option<Option<String>>,
+    root_path: Option<Option<String>>,
     ntp_servers: Option<Option<Vec<String>>>,
     domain_search: Option<Option<Vec<String>>>,
     mtu: Option<Option<u16>>,
@@ -121,6 +124,7 @@ async fn create_pool(
         boot_file: req.boot_file,
         boot_file_efi: req.boot_file_efi,
         ipxe_boot_url: req.ipxe_boot_url,
+        root_path: req.root_path,
         ntp_servers: req.ntp_servers,
         domain_search: req.domain_search,
         mtu: req.mtu,
@@ -178,6 +182,7 @@ async fn patch_pool(
     if let Some(v) = req.boot_file { pool.boot_file = v; }
     if let Some(v) = req.boot_file_efi { pool.boot_file_efi = v; }
     if let Some(v) = req.ipxe_boot_url { pool.ipxe_boot_url = v; }
+    if let Some(v) = req.root_path { pool.root_path = v; }
     if let Some(v) = req.ntp_servers { pool.ntp_servers = v; }
     if let Some(v) = req.domain_search { pool.domain_search = v; }
     if let Some(v) = req.mtu { pool.mtu = v; }

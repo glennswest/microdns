@@ -24,6 +24,8 @@ struct PxeConfig {
     boot_file_efi: Option<String>,
     /// HTTP boot script URL served to iPXE clients instead of the TFTP boot file
     ipxe_boot_url: Option<String>,
+    /// iSCSI root path (option 17) for direct sanboot
+    root_path: Option<String>,
 }
 
 pub struct Dhcpv4Server {
@@ -75,6 +77,7 @@ impl Dhcpv4Server {
                     boot_file: bf.clone(),
                     boot_file_efi: pool_cfg.boot_file_efi.clone(),
                     ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
+                    root_path: pool_cfg.root_path.clone()
                 }),
                 _ => None,
             };
@@ -155,6 +158,7 @@ impl Dhcpv4Server {
                     boot_file: bf.clone(),
                     boot_file_efi: pool_cfg.boot_file_efi.clone(),
                     ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
+                    root_path: pool_cfg.root_path.clone(),
                 }),
                 _ => None,
             };
@@ -836,7 +840,8 @@ impl Dhcpv4Server {
             .or_else(|| pool_pxe.and_then(|p| p.ipxe_boot_url.clone()));
         let effective_root_path = db_res
             .as_ref()
-            .and_then(|r| r.root_path.clone());
+            .and_then(|r| r.root_path.clone())
+            .or_else(|| pool_pxe.and_then(|p| p.root_path.clone()));
 
         if let (Some(next_srv), Some(ref bf)) = (effective_next_server, &effective_boot_file) {
             let is_ipxe = request.get_option(OPT_IPXE_ENCAP).is_some()

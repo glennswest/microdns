@@ -175,6 +175,8 @@ pub struct DhcpV4Pool {
     pub boot_file_efi: Option<String>,
     #[serde(default)]
     pub ipxe_boot_url: Option<String>,
+    #[serde(default)]
+    pub root_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

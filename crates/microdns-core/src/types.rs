@@ -238,6 +238,8 @@ pub struct DhcpPool {
     pub boot_file_efi: Option<String>,
     #[serde(default)]
     pub ipxe_boot_url: Option<String>,
+    #[serde(default)]
+    pub root_path: Option<String>,
     // Extended DHCP options
     #[serde(default)]
     pub ntp_servers: Option<Vec<String>>,
