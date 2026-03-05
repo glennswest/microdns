@@ -23,6 +23,7 @@ anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 hickory-proto.workspace = true
+tokio-stream.workspace = true
 
 [build-dependencies]
 tonic-build = "0.12"

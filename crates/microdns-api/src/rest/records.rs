@@ -1,11 +1,12 @@
 use crate::security::{internal_error, validate_dns_name, Pagination};
-use crate::AppState;
+use crate::{AppState, DashboardEvent};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 use microdns_core::types::{HealthCheck, Record, RecordData};
+use microdns_msg::events::{ChangeAction, Event};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -149,6 +150,23 @@ async fn create_record(
     // Increment SOA serial
     let _ = state.db.increment_soa_serial(&zone_id);
 
+    let _ = state.event_tx.send(DashboardEvent::RecordChanged {
+        action: "ADDED".to_string(),
+        zone_id: zone_id.to_string(),
+        record_name: record.name.clone(),
+    });
+    if let Some(ref bus) = state.message_bus {
+        let event = Event::RecordChanged {
+            instance_id: state.instance_id.clone(),
+            zone_id,
+            record_id: record.id,
+            record_name: record.name.clone(),
+            action: ChangeAction::Created,
+            timestamp: Utc::now(),
+        };
+        let _ = bus.publish(&event).await;
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(RecordResponse::from_record(record)),
@@ -204,6 +222,23 @@ async fn update_record(
 
     let _ = state.db.increment_soa_serial(&zone_id);
 
+    let _ = state.event_tx.send(DashboardEvent::RecordChanged {
+        action: "MODIFIED".to_string(),
+        zone_id: zone_id.to_string(),
+        record_name: record.name.clone(),
+    });
+    if let Some(ref bus) = state.message_bus {
+        let event = Event::RecordChanged {
+            instance_id: state.instance_id.clone(),
+            zone_id,
+            record_id: record.id,
+            record_name: record.name.clone(),
+            action: ChangeAction::Updated,
+            timestamp: Utc::now(),
+        };
+        let _ = bus.publish(&event).await;
+    }
+
     Ok(Json(RecordResponse::from_record(record)))
 }
 
@@ -211,12 +246,35 @@ async fn delete_record(
     State(state): State<AppState>,
     Path((zone_id, record_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let record = state
+        .db
+        .get_record(&record_id)
+        .map_err(internal_error)?
+        .ok_or((StatusCode::NOT_FOUND, "record not found".to_string()))?;
+
     state
         .db
         .delete_record(&record_id)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     let _ = state.db.increment_soa_serial(&zone_id);
+
+    let _ = state.event_tx.send(DashboardEvent::RecordChanged {
+        action: "DELETED".to_string(),
+        zone_id: zone_id.to_string(),
+        record_name: record.name,
+    });
+    if let Some(ref bus) = state.message_bus {
+        let event = Event::RecordChanged {
+            instance_id: state.instance_id.clone(),
+            zone_id,
+            record_id,
+            record_name: String::new(),
+            action: ChangeAction::Deleted,
+            timestamp: Utc::now(),
+        };
+        let _ = bus.publish(&event).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

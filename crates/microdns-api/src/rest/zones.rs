@@ -1,11 +1,12 @@
 use crate::security::{internal_error, validate_dns_name, Pagination};
-use crate::AppState;
+use crate::{AppState, DashboardEvent};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use microdns_core::types::{SoaData, Zone};
+use microdns_msg::events::{ChangeAction, Event};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -124,6 +125,22 @@ async fn create_zone(
         .create_zone(&name, &zone)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
 
+    let _ = state.event_tx.send(DashboardEvent::ZoneChanged {
+        action: "ADDED".to_string(),
+        zone_id: zone.id.to_string(),
+        zone_name: zone.name.clone(),
+    });
+    if let Some(ref bus) = state.message_bus {
+        let event = Event::ZoneChanged {
+            instance_id: state.instance_id.clone(),
+            zone_id: zone.id,
+            zone_name: zone.name.clone(),
+            action: ChangeAction::Created,
+            timestamp: Utc::now(),
+        };
+        let _ = bus.publish(&event).await;
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(ZoneResponse::from_zone(zone, Some(0))),
@@ -152,10 +169,32 @@ async fn delete_zone(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let zone = state
+        .db
+        .get_zone(&id)
+        .map_err(internal_error)?
+        .ok_or((StatusCode::NOT_FOUND, "zone not found".to_string()))?;
+
     state
         .db
         .delete_zone(&id)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    let _ = state.event_tx.send(DashboardEvent::ZoneChanged {
+        action: "DELETED".to_string(),
+        zone_id: id.to_string(),
+        zone_name: zone.name.clone(),
+    });
+    if let Some(ref bus) = state.message_bus {
+        let event = Event::ZoneChanged {
+            instance_id: state.instance_id.clone(),
+            zone_id: id,
+            zone_name: zone.name,
+            action: ChangeAction::Deleted,
+            timestamp: Utc::now(),
+        };
+        let _ = bus.publish(&event).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

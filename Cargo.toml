@@ -67,6 +67,7 @@ anyhow = "1"
 
 # Async
 async-trait = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

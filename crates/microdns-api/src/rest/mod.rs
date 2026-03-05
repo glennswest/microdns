@@ -10,6 +10,7 @@ pub mod ipam;
 pub mod leases;
 pub mod logs;
 pub mod records;
+pub mod watch;
 pub mod zones;
 
 use crate::AppState;
@@ -30,4 +31,5 @@ pub fn router() -> Router<AppState> {
         .merge(dhcp_reservations::router())
         .merge(dhcp_config::router())
         .merge(dns_forwarders::router())
+        .merge(watch::router())
 }
