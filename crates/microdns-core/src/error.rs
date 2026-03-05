@@ -29,6 +29,18 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("pool not found: {0}")]
+    PoolNotFound(String),
+
+    #[error("reservation not found: {0}")]
+    ReservationNotFound(String),
+
+    #[error("forwarder not found: {0}")]
+    ForwarderNotFound(String),
+
+    #[error("duplicate reservation: {0}")]
+    DuplicateReservation(String),
+
     #[error("{0}")]
     Other(String),
 }

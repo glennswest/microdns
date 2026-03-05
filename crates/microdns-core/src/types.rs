@@ -208,6 +208,125 @@ pub struct ReplicationMeta {
     pub source_serial: u32,
 }
 
+/// Classless static route for DHCP option 121
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaticRoute {
+    /// CIDR notation, e.g. "10.0.0.0/8"
+    pub destination: String,
+    pub gateway: String,
+}
+
+/// DHCP pool stored in database (replaces TOML-based DhcpV4Pool)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpPool {
+    pub id: Uuid,
+    pub name: String,
+    pub range_start: String,
+    pub range_end: String,
+    pub subnet: String,
+    pub gateway: String,
+    pub dns_servers: Vec<String>,
+    pub domain: String,
+    #[serde(default = "default_lease_time")]
+    pub lease_time_secs: u64,
+    // PXE options
+    #[serde(default)]
+    pub next_server: Option<String>,
+    #[serde(default)]
+    pub boot_file: Option<String>,
+    #[serde(default)]
+    pub boot_file_efi: Option<String>,
+    #[serde(default)]
+    pub ipxe_boot_url: Option<String>,
+    // Extended DHCP options
+    #[serde(default)]
+    pub ntp_servers: Option<Vec<String>>,
+    #[serde(default)]
+    pub domain_search: Option<Vec<String>>,
+    #[serde(default)]
+    pub mtu: Option<u16>,
+    #[serde(default)]
+    pub static_routes: Option<Vec<StaticRoute>>,
+    #[serde(default)]
+    pub log_server: Option<String>,
+    #[serde(default)]
+    pub time_offset: Option<i32>,
+    #[serde(default)]
+    pub wpad_url: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+fn default_lease_time() -> u64 {
+    3600
+}
+
+/// DHCP reservation stored in database (replaces TOML-based DhcpReservation).
+/// Per-reservation fields override pool defaults when set (None = inherit from pool).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpDbReservation {
+    /// MAC address (normalized lowercase), used as key
+    pub mac: String,
+    pub ip: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    // Per-reservation overrides
+    #[serde(default)]
+    pub gateway: Option<String>,
+    #[serde(default)]
+    pub dns_servers: Option<Vec<String>>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub ntp_servers: Option<Vec<String>>,
+    #[serde(default)]
+    pub domain_search: Option<Vec<String>>,
+    #[serde(default)]
+    pub mtu: Option<u16>,
+    #[serde(default)]
+    pub next_server: Option<String>,
+    #[serde(default)]
+    pub boot_file: Option<String>,
+    #[serde(default)]
+    pub boot_file_efi: Option<String>,
+    #[serde(default)]
+    pub ipxe_boot_url: Option<String>,
+    #[serde(default)]
+    pub static_routes: Option<Vec<StaticRoute>>,
+    #[serde(default)]
+    pub log_server: Option<String>,
+    #[serde(default)]
+    pub time_offset: Option<i32>,
+    #[serde(default)]
+    pub wpad_url: Option<String>,
+    #[serde(default)]
+    pub lease_time_secs: Option<u64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// DNS forward zone stored in database (replaces TOML forward_zones)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsForwarder {
+    /// Zone name (key)
+    pub zone: String,
+    /// Upstream DNS servers (host or host:port)
+    pub servers: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Instance-level DHCP config stored in database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbInstanceConfig {
+    pub listen_dns: Option<String>,
+    pub listen_api: Option<String>,
+    pub dhcp_interface: Option<String>,
+    pub dhcp_mode: Option<String>,
+    pub server_ip: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Instance mode for federation and runtime environment.
 ///
 /// - `standalone` — single-instance, no federation, standard DHCP.

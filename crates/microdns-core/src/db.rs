@@ -1,5 +1,8 @@
 use crate::error::{Error, Result};
-use crate::types::{IpamAllocation, Record, RecordType, ReplicationMeta, Zone};
+use crate::types::{
+    DbInstanceConfig, DhcpDbReservation, DhcpPool, DnsForwarder, IpamAllocation, Record,
+    RecordType, ReplicationMeta, Zone,
+};
 use chrono::Utc;
 use redb::{Database, ReadableTable, TableDefinition};
 use std::path::Path;
@@ -27,6 +30,20 @@ const IPAM_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ipam_alloc
 /// Replication metadata table: zone_id (string) -> ReplicationMeta (JSON)
 const REPLICATION_META_TABLE: TableDefinition<&str, &str> = TableDefinition::new("replication_meta");
 
+/// DHCP pools table: pool_id (UUID string) -> DhcpPool (JSON)
+const DHCP_POOLS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("dhcp_pools");
+
+/// DHCP reservations table: mac (normalized lowercase) -> DhcpDbReservation (JSON)
+const DHCP_RESERVATIONS_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("dhcp_reservations");
+
+/// DNS forwarders table: zone_name -> DnsForwarder (JSON)
+const DNS_FORWARDERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("dns_forwarders");
+
+/// Instance config table: "config" -> DbInstanceConfig (JSON)
+const INSTANCE_CONFIG_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("instance_config");
+
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Database>,
@@ -49,6 +66,10 @@ impl Db {
             let _ = write_txn.open_table(LEASES_TABLE)?;
             let _ = write_txn.open_table(IPAM_TABLE)?;
             let _ = write_txn.open_table(REPLICATION_META_TABLE)?;
+            let _ = write_txn.open_table(DHCP_POOLS_TABLE)?;
+            let _ = write_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+            let _ = write_txn.open_table(DNS_FORWARDERS_TABLE)?;
+            let _ = write_txn.open_table(INSTANCE_CONFIG_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -677,6 +698,234 @@ impl Db {
         Ok(None)
     }
 
+    // --- DHCP Pool operations ---
+
+    pub fn create_dhcp_pool(&self, pool: &DhcpPool) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let id_str = pool.id.to_string();
+            let json = serde_json::to_string(pool)?;
+            let mut table = write_txn.open_table(DHCP_POOLS_TABLE)?;
+            table.insert(id_str.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_dhcp_pool(&self, id: &Uuid) -> Result<Option<DhcpPool>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(DHCP_POOLS_TABLE)?;
+        let id_str = id.to_string();
+        match table.get(id_str.as_str())? {
+            Some(v) => Ok(Some(serde_json::from_str(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_dhcp_pools(&self) -> Result<Vec<DhcpPool>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(DHCP_POOLS_TABLE)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let entry = entry.map_err(|e| Error::Database(e.to_string()))?;
+            result.push(serde_json::from_str(entry.1.value())?);
+        }
+        Ok(result)
+    }
+
+    pub fn update_dhcp_pool(&self, pool: &DhcpPool) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let id_str = pool.id.to_string();
+            let mut table = write_txn.open_table(DHCP_POOLS_TABLE)?;
+            if table.get(id_str.as_str())?.is_none() {
+                return Err(Error::PoolNotFound(id_str));
+            }
+            let json = serde_json::to_string(pool)?;
+            table.insert(id_str.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_dhcp_pool(&self, id: &Uuid) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let id_str = id.to_string();
+            let mut table = write_txn.open_table(DHCP_POOLS_TABLE)?;
+            if table.get(id_str.as_str())?.is_none() {
+                return Err(Error::PoolNotFound(id_str));
+            }
+            table.remove(id_str.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // --- DHCP Reservation operations ---
+
+    /// Normalize MAC to lowercase colon-separated format
+    fn normalize_mac(mac: &str) -> String {
+        mac.to_lowercase()
+            .replace('-', ":")
+    }
+
+    pub fn create_dhcp_reservation(&self, reservation: &DhcpDbReservation) -> Result<()> {
+        let mac = Self::normalize_mac(&reservation.mac);
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+            if table.get(mac.as_str())?.is_some() {
+                return Err(Error::DuplicateReservation(mac));
+            }
+            let json = serde_json::to_string(reservation)?;
+            table.insert(mac.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_dhcp_reservation(&self, mac: &str) -> Result<Option<DhcpDbReservation>> {
+        let mac = Self::normalize_mac(mac);
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+        match table.get(mac.as_str())? {
+            Some(v) => Ok(Some(serde_json::from_str(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_dhcp_reservations(&self) -> Result<Vec<DhcpDbReservation>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let entry = entry.map_err(|e| Error::Database(e.to_string()))?;
+            result.push(serde_json::from_str(entry.1.value())?);
+        }
+        Ok(result)
+    }
+
+    pub fn update_dhcp_reservation(&self, reservation: &DhcpDbReservation) -> Result<()> {
+        let mac = Self::normalize_mac(&reservation.mac);
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+            if table.get(mac.as_str())?.is_none() {
+                return Err(Error::ReservationNotFound(mac));
+            }
+            let json = serde_json::to_string(reservation)?;
+            table.insert(mac.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Upsert a DHCP reservation — insert or update by MAC address.
+    pub fn upsert_dhcp_reservation(&self, reservation: &DhcpDbReservation) -> Result<()> {
+        let mac = Self::normalize_mac(&reservation.mac);
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+            let json = serde_json::to_string(reservation)?;
+            table.insert(mac.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_dhcp_reservation(&self, mac: &str) -> Result<()> {
+        let mac = Self::normalize_mac(mac);
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
+            if table.get(mac.as_str())?.is_none() {
+                return Err(Error::ReservationNotFound(mac));
+            }
+            table.remove(mac.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // --- DNS Forwarder operations ---
+
+    pub fn create_dns_forwarder(&self, forwarder: &DnsForwarder) -> Result<()> {
+        let zone = forwarder.zone.trim_end_matches('.').to_lowercase();
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DNS_FORWARDERS_TABLE)?;
+            let json = serde_json::to_string(forwarder)?;
+            table.insert(zone.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_dns_forwarder(&self, zone: &str) -> Result<Option<DnsForwarder>> {
+        let zone = zone.trim_end_matches('.').to_lowercase();
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(DNS_FORWARDERS_TABLE)?;
+        match table.get(zone.as_str())? {
+            Some(v) => Ok(Some(serde_json::from_str(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_dns_forwarders(&self) -> Result<Vec<DnsForwarder>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(DNS_FORWARDERS_TABLE)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let entry = entry.map_err(|e| Error::Database(e.to_string()))?;
+            result.push(serde_json::from_str(entry.1.value())?);
+        }
+        Ok(result)
+    }
+
+    pub fn delete_dns_forwarder(&self, zone: &str) -> Result<()> {
+        let zone = zone.trim_end_matches('.').to_lowercase();
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DNS_FORWARDERS_TABLE)?;
+            if table.get(zone.as_str())?.is_none() {
+                return Err(Error::ForwarderNotFound(zone));
+            }
+            table.remove(zone.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // --- Instance Config operations ---
+
+    pub fn get_instance_config(&self) -> Result<Option<DbInstanceConfig>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(INSTANCE_CONFIG_TABLE)?;
+        match table.get("config")? {
+            Some(v) => Ok(Some(serde_json::from_str(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_instance_config(&self, config: &DbInstanceConfig) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let json = serde_json::to_string(config)?;
+            let mut table = write_txn.open_table(INSTANCE_CONFIG_TABLE)?;
+            table.insert("config", json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Check if DHCP tables have any data (for migration detection)
+    pub fn dhcp_tables_empty(&self) -> Result<bool> {
+        let pools = self.list_dhcp_pools()?;
+        let reservations = self.list_dhcp_reservations()?;
+        Ok(pools.is_empty() && reservations.is_empty())
+    }
+
     /// Get the zone that owns a given FQDN
     pub fn find_zone_for_fqdn(&self, fqdn: &str) -> Result<Option<Zone>> {
         let fqdn = fqdn.trim_end_matches('.');
@@ -924,5 +1173,172 @@ mod tests {
         db.increment_soa_serial(&zone.id).unwrap();
         let after = db.get_zone(&zone.id).unwrap().unwrap().soa.serial;
         assert!(after > before);
+    }
+
+    #[test]
+    fn test_dhcp_pool_crud() {
+        use crate::types::DhcpPool;
+
+        let (db, _dir) = test_db();
+        let pool = DhcpPool {
+            id: Uuid::new_v4(),
+            name: "test-pool".to_string(),
+            range_start: "10.0.10.100".to_string(),
+            range_end: "10.0.10.200".to_string(),
+            subnet: "10.0.10.0/24".to_string(),
+            gateway: "10.0.10.1".to_string(),
+            dns_servers: vec!["10.0.10.2".to_string()],
+            domain: "test.lo".to_string(),
+            lease_time_secs: 3600,
+            next_server: None,
+            boot_file: None,
+            boot_file_efi: None,
+            ipxe_boot_url: None,
+            ntp_servers: None,
+            domain_search: None,
+            mtu: None,
+            static_routes: None,
+            log_server: None,
+            time_offset: None,
+            wpad_url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        db.create_dhcp_pool(&pool).unwrap();
+        let fetched = db.get_dhcp_pool(&pool.id).unwrap().unwrap();
+        assert_eq!(fetched.name, "test-pool");
+
+        let pools = db.list_dhcp_pools().unwrap();
+        assert_eq!(pools.len(), 1);
+
+        db.delete_dhcp_pool(&pool.id).unwrap();
+        assert!(db.get_dhcp_pool(&pool.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_dhcp_reservation_crud() {
+        use crate::types::DhcpDbReservation;
+
+        let (db, _dir) = test_db();
+        let res = DhcpDbReservation {
+            mac: "AA:BB:CC:DD:EE:FF".to_string(),
+            ip: "10.0.10.10".to_string(),
+            hostname: Some("server1".to_string()),
+            gateway: None,
+            dns_servers: None,
+            domain: None,
+            ntp_servers: None,
+            domain_search: None,
+            mtu: None,
+            next_server: None,
+            boot_file: None,
+            boot_file_efi: None,
+            ipxe_boot_url: None,
+            static_routes: None,
+            log_server: None,
+            time_offset: None,
+            wpad_url: None,
+            lease_time_secs: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        db.create_dhcp_reservation(&res).unwrap();
+
+        // Get by MAC (case-insensitive)
+        let fetched = db.get_dhcp_reservation("aa:bb:cc:dd:ee:ff").unwrap().unwrap();
+        assert_eq!(fetched.ip, "10.0.10.10");
+
+        // Duplicate should fail
+        assert!(db.create_dhcp_reservation(&res).is_err());
+
+        // Upsert should succeed
+        let mut updated = res.clone();
+        updated.ip = "10.0.10.20".to_string();
+        db.upsert_dhcp_reservation(&updated).unwrap();
+        let fetched = db.get_dhcp_reservation("aa:bb:cc:dd:ee:ff").unwrap().unwrap();
+        assert_eq!(fetched.ip, "10.0.10.20");
+
+        let all = db.list_dhcp_reservations().unwrap();
+        assert_eq!(all.len(), 1);
+
+        db.delete_dhcp_reservation("AA:BB:CC:DD:EE:FF").unwrap();
+        assert!(db.get_dhcp_reservation("aa:bb:cc:dd:ee:ff").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_dns_forwarder_crud() {
+        use crate::types::DnsForwarder;
+
+        let (db, _dir) = test_db();
+        let fwd = DnsForwarder {
+            zone: "corp.local".to_string(),
+            servers: vec!["10.0.1.1:53".to_string()],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        db.create_dns_forwarder(&fwd).unwrap();
+        let fetched = db.get_dns_forwarder("corp.local").unwrap().unwrap();
+        assert_eq!(fetched.servers, vec!["10.0.1.1:53"]);
+
+        let all = db.list_dns_forwarders().unwrap();
+        assert_eq!(all.len(), 1);
+
+        db.delete_dns_forwarder("corp.local").unwrap();
+        assert!(db.get_dns_forwarder("corp.local").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_instance_config() {
+        use crate::types::DbInstanceConfig;
+
+        let (db, _dir) = test_db();
+        assert!(db.get_instance_config().unwrap().is_none());
+
+        let cfg = DbInstanceConfig {
+            listen_dns: Some("0.0.0.0:53".to_string()),
+            listen_api: Some("0.0.0.0:8080".to_string()),
+            dhcp_interface: Some("eth0".to_string()),
+            dhcp_mode: Some("gateway".to_string()),
+            server_ip: Some("192.168.10.252".to_string()),
+            updated_at: Utc::now(),
+        };
+
+        db.set_instance_config(&cfg).unwrap();
+        let fetched = db.get_instance_config().unwrap().unwrap();
+        assert_eq!(fetched.dhcp_interface.as_deref(), Some("eth0"));
+    }
+
+    #[test]
+    fn test_dhcp_tables_empty() {
+        let (db, _dir) = test_db();
+        assert!(db.dhcp_tables_empty().unwrap());
+
+        let res = DhcpDbReservation {
+            mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            ip: "10.0.10.10".to_string(),
+            hostname: None,
+            gateway: None,
+            dns_servers: None,
+            domain: None,
+            ntp_servers: None,
+            domain_search: None,
+            mtu: None,
+            next_server: None,
+            boot_file: None,
+            boot_file_efi: None,
+            ipxe_boot_url: None,
+            static_routes: None,
+            log_server: None,
+            time_offset: None,
+            wpad_url: None,
+            lease_time_secs: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        db.create_dhcp_reservation(&res).unwrap();
+        assert!(!db.dhcp_tables_empty().unwrap());
     }
 }
