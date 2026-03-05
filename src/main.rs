@@ -154,17 +154,28 @@ async fn main() -> Result<()> {
         ("noop".to_string(), "microdns".to_string(), vec![], None)
     };
 
-    let message_bus: Arc<dyn microdns_msg::MessageBus> = Arc::from(
-        microdns_msg::create_message_bus(
-            &backend,
-            &config.instance.id,
-            &topic_prefix,
-            &brokers,
-            nats_url.as_deref(),
-        )
-        .await?,
-    );
-    info!(backend = %backend, "message bus initialized");
+    let message_bus: Arc<dyn microdns_msg::MessageBus> = match microdns_msg::create_message_bus(
+        &backend,
+        &config.instance.id,
+        &topic_prefix,
+        &brokers,
+        nats_url.as_deref(),
+    )
+    .await
+    {
+        Ok(bus) => {
+            info!(backend = %backend, "message bus initialized");
+            Arc::from(bus)
+        }
+        Err(e) => {
+            tracing::warn!(backend = %backend, error = %e, "message bus connection failed, falling back to noop — DNS/DHCP will work but events won't publish");
+            Arc::from(
+                microdns_msg::create_message_bus("noop", &config.instance.id, &topic_prefix, &[], None)
+                    .await
+                    .expect("noop message bus should never fail"),
+            )
+        }
+    };
 
     // Heartbeat tracker (used by coordinator mode and API)
     let heartbeat_tracker = Arc::new(HeartbeatTracker::new(

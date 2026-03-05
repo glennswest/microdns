@@ -1313,6 +1313,7 @@ dependencies = [
  "microdns-lb",
  "microdns-msg",
  "microdns-recursor",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

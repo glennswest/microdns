@@ -110,3 +110,4 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
