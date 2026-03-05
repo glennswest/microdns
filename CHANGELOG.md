@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### 2026-03-05
+- **feat:** Database-driven DHCP/DNS config — all pools, reservations, forwarders stored in redb, CRUD via REST API
+- **feat:** New redb tables: `dhcp_pools`, `dhcp_reservations`, `dns_forwarders`, `instance_config` with full CRUD
+- **feat:** REST API: POST/GET/PATCH/DELETE for `/dhcp/pools`, `/dhcp/reservations`, `/dhcp/config`, `/dns/forwarders`
+- **feat:** Extended DHCP options: NTP servers (opt 42), MTU (opt 26), domain search (opt 119), classless static routes (opt 121), log server (opt 7), time offset (opt 2), WPAD (opt 252)
+- **feat:** DHCP server reads pools/reservations directly from database (no in-memory cache, no reload signals)
+- **feat:** Recursor reads forward zones directly from database on each query
+- **feat:** CLI bootstrap: `--listen-dns`, `--data-dir`, `--nats-url`, `--mode`, `--dhcp-interface`, `--instance-id` flags
+- **feat:** TOML→database one-time migration on first boot (backward compat)
+- **refactor:** Removed all reload channels — redb is memory-mapped, reads are free
+- **feat:** Dashboard rewrite — 7-tab SPA (Overview, DNS, LB, DHCP, Events, Logs, Peers)
+- **feat:** DHCP tab: full CRUD for pools and reservations with all extended option fields
+- **feat:** Events tab: real-time event stream from broadcast channel with type filtering
+- **feat:** WebSocket: two message types (snapshot + event) via tokio::select!
+- **feat:** SSE watch endpoint: `GET /api/v1/watch?types=dhcp,dns,zones,records,leases`
+- **feat:** Zone/record event publishing to DashboardEvent broadcast + NATS MessageBus
+- **feat:** NATS publishing from all mutation handlers (pools, reservations, forwarders, zones, records)
+
 ### 2026-03-01
 - **feat:** DHCPv4 dual mode — `normal` (direct broadcast, standard DHCP) and `gateway` (relay-only with veth deadman timer for containerized deployments)
 - **fix:** DHCPv4 now works on non-relay deployments — previously all direct broadcasts were silently dropped
