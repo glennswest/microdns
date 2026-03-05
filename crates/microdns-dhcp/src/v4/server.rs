@@ -834,6 +834,9 @@ impl Dhcpv4Server {
             .as_ref()
             .and_then(|r| r.ipxe_boot_url.clone())
             .or_else(|| pool_pxe.and_then(|p| p.ipxe_boot_url.clone()));
+        let effective_root_path = db_res
+            .as_ref()
+            .and_then(|r| r.root_path.clone());
 
         if let (Some(next_srv), Some(ref bf)) = (effective_next_server, &effective_boot_file) {
             let is_ipxe = request.get_option(OPT_IPXE_ENCAP).is_some()
@@ -854,8 +857,21 @@ impl Dhcpv4Server {
                 })
                 .unwrap_or(false);
 
+            // When iPXE is detected and root_path is set (iSCSI URI), send it
+            // as option 17. iPXE will sanboot directly from the iSCSI target
+            // without needing an HTTP boot script.
+            if is_ipxe {
+                if let Some(ref rp) = effective_root_path {
+                    info!("iPXE client detected, serving root-path: {}", rp);
+                    options.push(string_option(OPT_ROOT_PATH, rp));
+                }
+            }
+
             let boot_file = if is_ipxe {
-                if let Some(ref url) = effective_ipxe_url {
+                if effective_root_path.is_some() {
+                    // root_path set — iPXE will sanboot from it, no script needed
+                    bf.as_str()
+                } else if let Some(ref url) = effective_ipxe_url {
                     info!("iPXE client detected, serving boot URL: {}", url);
                     url.as_str()
                 } else {

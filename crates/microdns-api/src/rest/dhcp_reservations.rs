@@ -45,6 +45,8 @@ struct CreateReservationRequest {
     #[serde(default)]
     ipxe_boot_url: Option<String>,
     #[serde(default)]
+    root_path: Option<String>,
+    #[serde(default)]
     static_routes: Option<Vec<microdns_core::types::StaticRoute>>,
     #[serde(default)]
     log_server: Option<String>,
@@ -70,6 +72,7 @@ struct PatchReservationRequest {
     boot_file: Option<Option<String>>,
     boot_file_efi: Option<Option<String>>,
     ipxe_boot_url: Option<Option<String>>,
+    root_path: Option<Option<String>>,
     static_routes: Option<Option<Vec<microdns_core::types::StaticRoute>>>,
     log_server: Option<Option<String>>,
     time_offset: Option<Option<i32>>,
@@ -122,6 +125,7 @@ async fn create_reservation(
         boot_file: req.boot_file,
         boot_file_efi: req.boot_file_efi,
         ipxe_boot_url: req.ipxe_boot_url,
+        root_path: req.root_path,
         static_routes: req.static_routes,
         log_server: req.log_server,
         time_offset: req.time_offset,
@@ -180,6 +184,7 @@ async fn patch_reservation(
     if let Some(v) = req.boot_file { res.boot_file = v; }
     if let Some(v) = req.boot_file_efi { res.boot_file_efi = v; }
     if let Some(v) = req.ipxe_boot_url { res.ipxe_boot_url = v; }
+    if let Some(v) = req.root_path { res.root_path = v; }
     if let Some(v) = req.static_routes { res.static_routes = v; }
     if let Some(v) = req.log_server { res.log_server = v; }
     if let Some(v) = req.time_offset { res.time_offset = v; }

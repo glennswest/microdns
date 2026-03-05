@@ -38,6 +38,7 @@ pub const OPT_DNS_SERVER: u8 = 6;
 pub const OPT_LOG_SERVER: u8 = 7;
 pub const OPT_HOSTNAME: u8 = 12;
 pub const OPT_DOMAIN_NAME: u8 = 15;
+pub const OPT_ROOT_PATH: u8 = 17;
 pub const OPT_MTU: u8 = 26;
 pub const OPT_NTP_SERVERS: u8 = 42;
 pub const OPT_REQUESTED_IP: u8 = 50;

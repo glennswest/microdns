@@ -292,6 +292,8 @@ pub struct DhcpDbReservation {
     #[serde(default)]
     pub ipxe_boot_url: Option<String>,
     #[serde(default)]
+    pub root_path: Option<String>,
+    #[serde(default)]
     pub static_routes: Option<Vec<StaticRoute>>,
     #[serde(default)]
     pub log_server: Option<String>,
