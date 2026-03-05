@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 /// Maximum concurrent TCP connections
@@ -27,6 +27,8 @@ const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct RecursorServer {
     listen_addr: SocketAddr,
     resolver: Arc<Resolver>,
+    db: Option<Db>,
+    reload_rx: Option<watch::Receiver<()>>,
 }
 
 impl RecursorServer {
@@ -34,14 +36,42 @@ impl RecursorServer {
         let listen_addr: SocketAddr = config.listen.parse()?;
 
         let cache = Arc::new(DnsCache::new(config.cache_size));
-        let forward_table = Arc::new(ForwardTable::from_config(&config.forward_zones));
+        let forward_table = Arc::new(RwLock::new(ForwardTable::from_config(&config.forward_zones)));
 
-        let resolver = Arc::new(Resolver::new(cache, forward_table, db));
+        let resolver = Arc::new(Resolver::new(cache, forward_table, db.clone()));
 
         Ok(Self {
             listen_addr,
             resolver,
+            db,
+            reload_rx: None,
         })
+    }
+
+    /// Create a recursor that loads forward zones from the database.
+    pub fn from_db(listen_addr: SocketAddr, db: Db, cache_size: usize) -> anyhow::Result<Self> {
+        let cache = Arc::new(DnsCache::new(cache_size));
+        let forwarders = db.list_dns_forwarders().unwrap_or_default();
+        let forward_table = Arc::new(RwLock::new(ForwardTable::from_forwarders(&forwarders)));
+        info!(
+            "recursor loaded {} forward zones from database",
+            forwarders.len()
+        );
+
+        let resolver = Arc::new(Resolver::new(cache, forward_table, Some(db.clone())));
+
+        Ok(Self {
+            listen_addr,
+            resolver,
+            db: Some(db),
+            reload_rx: None,
+        })
+    }
+
+    /// Set a reload channel — when signaled, forward zones are reloaded from the database.
+    pub fn with_reload(mut self, rx: watch::Receiver<()>) -> Self {
+        self.reload_rx = Some(rx);
+        self
     }
 
     pub async fn run(self, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
@@ -54,6 +84,7 @@ impl RecursorServer {
 
         let mut buf = vec![0u8; 4096];
         let mut shutdown_udp = shutdown.clone();
+        let shutdown_reload = shutdown.clone();
         let mut shutdown_tcp = shutdown;
 
         let resolver_tcp = self.resolver.clone();
@@ -102,6 +133,35 @@ impl RecursorServer {
             }
         });
 
+        // Spawn forward-zone reload task if db + reload channel available
+        let reload_handle = if let (Some(db), Some(mut reload_rx)) = (self.db.clone(), self.reload_rx) {
+            let resolver = self.resolver.clone();
+            let mut shutdown_reload = shutdown_reload;
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = reload_rx.changed() => {
+                            match db.list_dns_forwarders() {
+                                Ok(forwarders) => {
+                                    let table = ForwardTable::from_forwarders(&forwarders);
+                                    resolver.update_forward_table(table).await;
+                                    info!("recursor reloaded {} forward zones from database", forwarders.len());
+                                }
+                                Err(e) => {
+                                    error!("failed to reload forward zones: {e}");
+                                }
+                            }
+                        }
+                        _ = shutdown_reload.changed() => {
+                            if *shutdown_reload.borrow() { break; }
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         // UDP recv loop with concurrency limit
         let udp_semaphore = Arc::new(Semaphore::new(MAX_UDP_QUERIES));
         loop {
@@ -145,6 +205,9 @@ impl RecursorServer {
         }
 
         tcp_handle.abort();
+        if let Some(h) = reload_handle {
+            h.abort();
+        }
         Ok(())
     }
 

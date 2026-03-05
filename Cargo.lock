@@ -1316,6 +1316,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1329,6 +1330,7 @@ dependencies = [
  "microdns-auth",
  "microdns-core",
  "microdns-federation",
+ "microdns-msg",
  "prost",
  "redb",
  "serde",

@@ -7,27 +7,115 @@ use microdns_auth::server::AuthServer;
 use microdns_core::config::Config;
 use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
-use microdns_core::types::InstanceMode;
+use microdns_core::types::{DhcpDbReservation, DhcpPool, DnsForwarder, InstanceMode};
 use microdns_federation::heartbeat::HeartbeatTracker;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Parser)]
 #[command(name = "microdns", about = "MicroDNS - Authoritative DNS, Recursive DNS, Load Balancer, and DHCP")]
 struct Cli {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "/etc/microdns/microdns.toml")]
-    config: PathBuf,
+    /// Path to configuration file (optional — if omitted, runs with database-only config)
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    /// DNS listen address (e.g. "0.0.0.0:53")
+    #[arg(long)]
+    listen_dns: Option<String>,
+
+    /// REST API listen address (e.g. "0.0.0.0:8080")
+    #[arg(long)]
+    listen_api: Option<String>,
+
+    /// Data directory for database and state
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// NATS URL for messaging
+    #[arg(long)]
+    nats_url: Option<String>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    log_level: String,
+
+    /// Instance mode (standalone, leaf, coordinator, gateway)
+    #[arg(long)]
+    mode: Option<String>,
+
+    /// DHCP network interface
+    #[arg(long)]
+    dhcp_interface: Option<String>,
+
+    /// Instance ID (unique per microdns instance)
+    #[arg(long)]
+    instance_id: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut config = Config::from_file(&cli.config)?;
+    let mut config = if let Some(ref config_path) = cli.config {
+        Config::from_file(config_path)?
+    } else {
+        Config::default()
+    };
+
+    // CLI flag overrides
+    if let Some(ref id) = cli.instance_id {
+        config.instance.id = id.clone();
+    }
+    if let Some(ref mode) = cli.mode {
+        config.instance.mode = match mode.as_str() {
+            "standalone" => InstanceMode::Standalone,
+            "leaf" => InstanceMode::Leaf,
+            "coordinator" => InstanceMode::Coordinator,
+            "gateway" => InstanceMode::Gateway,
+            _ => {
+                anyhow::bail!("invalid mode: {mode} (expected standalone, leaf, coordinator, gateway)");
+            }
+        };
+    }
+    if let Some(ref level) = Some(&cli.log_level) {
+        config.logging.level = level.to_string();
+    }
+    if let Some(ref listen_dns) = cli.listen_dns {
+        // Override auth + recursor listen addresses
+        if let Some(ref mut auth) = config.dns.auth {
+            auth.listen = listen_dns.clone();
+            auth.enabled = true;
+        }
+        if let Some(ref mut recursor) = config.dns.recursor {
+            recursor.listen = listen_dns.clone();
+            recursor.enabled = true;
+        }
+    }
+    if let Some(ref listen_api) = cli.listen_api {
+        if let Some(ref mut rest) = config.api.rest {
+            rest.listen = listen_api.clone();
+            rest.enabled = true;
+        }
+    }
+    if let Some(ref data_dir) = cli.data_dir {
+        config.database.path = data_dir.join("microdns.db");
+    }
+    if let Some(ref nats_url) = cli.nats_url {
+        if config.messaging.is_none() {
+            config.messaging = Some(microdns_core::config::MessagingConfig {
+                backend: "nats".to_string(),
+                topic_prefix: "microdns".to_string(),
+                brokers: vec![],
+                url: Some(nats_url.clone()),
+            });
+        } else if let Some(ref mut msg) = config.messaging {
+            msg.url = Some(nats_url.clone());
+            msg.backend = "nats".to_string();
+        }
+    }
 
     // Initialize logging
     let log_buffer = init_logging(&config.logging);
@@ -42,8 +130,18 @@ async fn main() -> Result<()> {
     let db = Db::open(&config.database.path)?;
     info!(path = %config.database.path.display(), "database opened");
 
+    // TOML → database migration: if config file was provided and DB tables are empty,
+    // auto-import pools, reservations, and forwarders to the database (one-time).
+    if cli.config.is_some() {
+        migrate_toml_to_db(&config, &db);
+    }
+
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Reload channel — API sends signal on DHCP/forwarder mutations,
+    // DHCP server and recursor both listen for hot-reload
+    let (reload_tx, _reload_rx) = watch::channel(());
 
     let mut tasks = Vec::new();
 
@@ -183,7 +281,8 @@ async fn main() -> Result<()> {
             let server = microdns_recursor::RecursorServer::new(
                 recursor_config,
                 Some(db.clone()),
-            )?;
+            )?
+            .with_reload(reload_tx.subscribe());
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = server.run(rx).await {
@@ -255,6 +354,7 @@ async fn main() -> Result<()> {
                     server = server.with_dns_registrar(registrar.clone());
                 }
                 server = server.with_message_bus(message_bus.clone(), &config.instance.id);
+                server = server.with_reload(reload_tx.subscribe());
                 let rx = shutdown_rx.clone();
                 tasks.push(tokio::spawn(async move {
                     if let Err(e) = server.run(rx).await {
@@ -385,7 +485,8 @@ async fn main() -> Result<()> {
                 .with_peers(config.instance.peers.clone())
                 .with_dhcp_status(dhcp_status)
                 .with_log_buffer(log_buffer.clone())
-                .with_dashboard_addr(dashboard_addr);
+                .with_dashboard_addr(dashboard_addr)
+                .with_reload_tx(reload_tx.clone());
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());
@@ -444,6 +545,111 @@ async fn main() -> Result<()> {
 
     info!("microdns stopped");
     Ok(())
+}
+
+/// Migrate DHCP pools, reservations, and DNS forwarders from TOML config into
+/// the database. Only runs once — if the DB tables already have data, this is a no-op.
+fn migrate_toml_to_db(config: &Config, db: &Db) {
+    let empty = match db.dhcp_tables_empty() {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("failed to check if DHCP tables are empty: {e}");
+            return;
+        }
+    };
+    if !empty {
+        return;
+    }
+
+    info!("TOML → database migration: importing DHCP pools, reservations, and forwarders");
+
+    // Import pools
+    if let Some(ref dhcp) = config.dhcp {
+        if let Some(ref v4) = dhcp.v4 {
+            for pool_cfg in &v4.pools {
+                let pool = DhcpPool {
+                    id: uuid::Uuid::new_v4(),
+                    name: format!("{} ({})", pool_cfg.domain, pool_cfg.subnet),
+                    range_start: pool_cfg.range_start.clone(),
+                    range_end: pool_cfg.range_end.clone(),
+                    subnet: pool_cfg.subnet.clone(),
+                    gateway: pool_cfg.gateway.clone(),
+                    dns_servers: pool_cfg.dns.clone(),
+                    domain: pool_cfg.domain.clone(),
+                    lease_time_secs: pool_cfg.lease_time_secs,
+                    next_server: pool_cfg.next_server.clone(),
+                    boot_file: pool_cfg.boot_file.clone(),
+                    boot_file_efi: pool_cfg.boot_file_efi.clone(),
+                    ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
+                    ntp_servers: None,
+                    domain_search: None,
+                    mtu: None,
+                    static_routes: None,
+                    log_server: None,
+                    time_offset: None,
+                    wpad_url: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                };
+                match db.create_dhcp_pool(&pool) {
+                    Ok(_) => info!("migrated pool: {} ({})", pool.name, pool.subnet),
+                    Err(e) => warn!("failed to migrate pool {}: {e}", pool.name),
+                }
+            }
+
+            // Import reservations
+            for res in &v4.reservations {
+                let reservation = DhcpDbReservation {
+                    mac: res.mac.clone(),
+                    ip: res.ip.clone(),
+                    hostname: res.hostname.clone(),
+                    gateway: None,
+                    dns_servers: None,
+                    domain: None,
+                    next_server: None,
+                    boot_file: None,
+                    boot_file_efi: None,
+                    ipxe_boot_url: None,
+                    ntp_servers: None,
+                    domain_search: None,
+                    mtu: None,
+                    static_routes: None,
+                    log_server: None,
+                    time_offset: None,
+                    wpad_url: None,
+                    lease_time_secs: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                };
+                match db.create_dhcp_reservation(&reservation) {
+                    Ok(_) => info!(
+                        "migrated reservation: {} → {}",
+                        res.mac,
+                        res.ip
+                    ),
+                    Err(e) => warn!("failed to migrate reservation {}: {e}", res.mac),
+                }
+            }
+        }
+    }
+
+    // Import forward zones
+    if let Some(ref recursor) = config.dns.recursor {
+        for (zone, servers) in &recursor.forward_zones {
+            let fwd = DnsForwarder {
+                zone: zone.trim_end_matches('.').to_lowercase(),
+                servers: servers.clone(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+            match db.create_dns_forwarder(&fwd) {
+                Ok(_) => info!("migrated forward zone: {} → {:?}", fwd.zone, fwd.servers),
+                Err(e) => warn!("failed to migrate forward zone {}: {e}", zone),
+            }
+        }
+    }
+
+    info!("TOML → database migration complete");
 }
 
 fn init_logging(config: &microdns_core::config::LoggingConfig) -> Arc<LogBuffer> {

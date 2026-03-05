@@ -417,6 +417,33 @@ fn default_topic_prefix() -> String {
     "microdns".to_string()
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            instance: InstanceConfig::default(),
+            coordinator: None,
+            dns: DnsConfig::default(),
+            dhcp: None,
+            messaging: None,
+            api: ApiConfig::default(),
+            database: DatabaseConfig::default(),
+            logging: LoggingConfig::default(),
+            ipam: None,
+            replication: None,
+        }
+    }
+}
+
+impl Default for InstanceConfig {
+    fn default() -> Self {
+        Self {
+            id: "microdns".to_string(),
+            mode: InstanceMode::Standalone,
+            peers: Vec::new(),
+        }
+    }
+}
+
 impl Config {
     pub fn from_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)

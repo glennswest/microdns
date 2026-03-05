@@ -98,6 +98,14 @@ impl ApiServer {
         self
     }
 
+    /// Use an external reload channel instead of the internal one.
+    /// This allows the API server, DHCP server, and recursor to share
+    /// the same reload signal.
+    pub fn with_reload_tx(mut self, tx: watch::Sender<()>) -> Self {
+        self.dhcp_reload_tx = tx;
+        self
+    }
+
     pub fn dhcp_reload_rx(&self) -> watch::Receiver<()> {
         self.dhcp_reload_tx.subscribe()
     }

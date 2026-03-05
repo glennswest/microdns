@@ -1,3 +1,4 @@
+use microdns_core::types::DnsForwarder;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -47,6 +48,39 @@ impl ForwardTable {
         // Sort by length descending so most-specific match wins
         zones.sort_by(|a, b| b.name.len().cmp(&a.name.len()));
 
+        Self { zones }
+    }
+
+    /// Build from database forwarder entries.
+    pub fn from_forwarders(forwarders: &[DnsForwarder]) -> Self {
+        let mut zones: Vec<ForwardZone> = forwarders
+            .iter()
+            .filter_map(|fwd| {
+                let servers: Vec<SocketAddr> = fwd
+                    .servers
+                    .iter()
+                    .filter_map(|a| {
+                        if a.contains(':') {
+                            a.parse().ok()
+                        } else {
+                            format!("{a}:53").parse().ok()
+                        }
+                    })
+                    .collect();
+                if servers.is_empty() {
+                    tracing::warn!(
+                        "forward zone {}: no valid upstream servers",
+                        fwd.zone
+                    );
+                    return None;
+                }
+                Some(ForwardZone {
+                    name: fwd.zone.trim_end_matches('.').to_lowercase(),
+                    servers,
+                })
+            })
+            .collect();
+        zones.sort_by(|a, b| b.name.len().cmp(&a.name.len()));
         Self { zones }
     }
 
