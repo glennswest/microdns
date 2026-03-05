@@ -69,6 +69,33 @@ pub enum Event {
         payload: ConfigPayload,
         timestamp: DateTime<Utc>,
     },
+
+    /// DHCP pool was created, updated, or deleted
+    DhcpPoolChanged {
+        instance_id: String,
+        pool_id: Uuid,
+        pool_name: String,
+        action: ChangeAction,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// DHCP reservation was created, updated, or deleted
+    DhcpReservationChanged {
+        instance_id: String,
+        mac: String,
+        ip: String,
+        hostname: Option<String>,
+        action: ChangeAction,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// DNS forwarder was created or deleted
+    DnsForwarderChanged {
+        instance_id: String,
+        zone: String,
+        action: ChangeAction,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -101,6 +128,9 @@ impl Event {
             Event::HealthChanged { instance_id, .. } => instance_id,
             Event::Heartbeat { instance_id, .. } => instance_id,
             Event::ConfigPush { source, .. } => source,
+            Event::DhcpPoolChanged { instance_id, .. } => instance_id,
+            Event::DhcpReservationChanged { instance_id, .. } => instance_id,
+            Event::DnsForwarderChanged { instance_id, .. } => instance_id,
         }
     }
 
@@ -111,6 +141,9 @@ impl Event {
             Event::HealthChanged { .. } => "health",
             Event::Heartbeat { .. } => "heartbeat",
             Event::ConfigPush { .. } => "config",
+            Event::DhcpPoolChanged { .. } => "dhcp.pools",
+            Event::DhcpReservationChanged { .. } => "dhcp.reservations",
+            Event::DnsForwarderChanged { .. } => "dns.forwarders",
         }
     }
 }

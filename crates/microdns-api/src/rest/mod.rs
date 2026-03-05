@@ -1,6 +1,10 @@
 pub mod cluster;
 pub mod connectivity;
 pub mod dhcp;
+pub mod dhcp_config;
+pub mod dhcp_pools;
+pub mod dhcp_reservations;
+pub mod dns_forwarders;
 pub mod health;
 pub mod ipam;
 pub mod leases;
@@ -22,4 +26,8 @@ pub fn router() -> Router<AppState> {
         .merge(connectivity::router())
         .merge(dhcp::router())
         .merge(logs::router())
+        .merge(dhcp_pools::router())
+        .merge(dhcp_reservations::router())
+        .merge(dhcp_config::router())
+        .merge(dns_forwarders::router())
 }

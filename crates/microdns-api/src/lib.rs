@@ -13,10 +13,11 @@ use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
 use microdns_federation::heartbeat::HeartbeatTracker;
+use microdns_msg::MessageBus;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tracing::info;
 
 pub use rest::dhcp::DhcpStatusConfig;
@@ -38,6 +39,21 @@ pub struct ApiServer {
     peers: Vec<PeerConfig>,
     dhcp_status: DhcpStatusConfig,
     log_buffer: Option<Arc<LogBuffer>>,
+    message_bus: Option<Arc<dyn MessageBus>>,
+    dhcp_reload_tx: watch::Sender<()>,
+    event_tx: broadcast::Sender<DashboardEvent>,
+}
+
+/// Dashboard event for real-time UI updates via broadcast channel
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum DashboardEvent {
+    DhcpPoolChanged { action: String, pool_id: String, pool_name: String },
+    DhcpReservationChanged { action: String, mac: String, ip: String },
+    DnsForwarderChanged { action: String, zone: String },
+    LeaseChanged { action: String, ip: String, mac: String },
+    ZoneChanged { action: String, zone_id: String, zone_name: String },
+    RecordChanged { action: String, zone_id: String, record_name: String },
 }
 
 #[derive(Clone)]
@@ -51,10 +67,15 @@ pub struct AppState {
     pub ws_connections: Arc<AtomicUsize>,
     pub dhcp_status: DhcpStatusConfig,
     pub log_buffer: Option<Arc<LogBuffer>>,
+    pub message_bus: Option<Arc<dyn MessageBus>>,
+    pub dhcp_reload_tx: watch::Sender<()>,
+    pub event_tx: broadcast::Sender<DashboardEvent>,
 }
 
 impl ApiServer {
     pub fn new(listen_addr: SocketAddr, db: Db, api_key: Option<String>) -> Self {
+        let (dhcp_reload_tx, _) = watch::channel(());
+        let (event_tx, _) = broadcast::channel(256);
         Self {
             listen_addr,
             dashboard_addr: None,
@@ -66,7 +87,23 @@ impl ApiServer {
             peers: Vec::new(),
             dhcp_status: DhcpStatusConfig::default(),
             log_buffer: None,
+            message_bus: None,
+            dhcp_reload_tx,
+            event_tx,
         }
+    }
+
+    pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
+        self.message_bus = Some(bus);
+        self
+    }
+
+    pub fn dhcp_reload_rx(&self) -> watch::Receiver<()> {
+        self.dhcp_reload_tx.subscribe()
+    }
+
+    pub fn event_rx(&self) -> broadcast::Receiver<DashboardEvent> {
+        self.event_tx.subscribe()
     }
 
     pub fn with_dashboard_addr(mut self, addr: SocketAddr) -> Self {
@@ -115,6 +152,9 @@ impl ApiServer {
             ws_connections: Arc::new(AtomicUsize::new(0)),
             dhcp_status: self.dhcp_status,
             log_buffer: self.log_buffer,
+            message_bus: self.message_bus,
+            dhcp_reload_tx: self.dhcp_reload_tx,
+            event_tx: self.event_tx,
         };
 
         // API router: /api/v1 routes with body limit + api_key auth + CORS
