@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 microdns-core.workspace = true
 microdns-auth.workspace = true
+microdns-recursor.workspace = true
 microdns-federation.workspace = true
 microdns-msg.workspace = true
 axum.workspace = true

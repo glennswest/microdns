@@ -58,7 +58,11 @@ async fn create_forwarder(
 
     state.db.create_dns_forwarder(&fwd).map_err(internal_error)?;
 
-    // Signal recursor reload
+    // Invalidate recursor cache — forwarder changes affect resolution path
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
+
     let _ = state.event_tx.send(DashboardEvent::DnsForwarderChanged {
         action: "ADDED".to_string(),
         zone: fwd.zone.clone(),
@@ -84,6 +88,11 @@ async fn delete_forwarder(
         .db
         .delete_dns_forwarder(&zone)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    // Invalidate recursor cache — forwarder deletion changes resolution path
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
 
     let _ = state.event_tx.send(DashboardEvent::DnsForwarderChanged {
         action: "DELETED".to_string(),

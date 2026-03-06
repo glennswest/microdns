@@ -14,6 +14,7 @@ use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
 use microdns_federation::heartbeat::HeartbeatTracker;
 use microdns_msg::MessageBus;
+use microdns_recursor::cache::DnsCache;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub struct ApiServer {
     log_buffer: Option<Arc<LogBuffer>>,
     message_bus: Option<Arc<dyn MessageBus>>,
     event_tx: broadcast::Sender<DashboardEvent>,
+    recursor_cache: Option<Arc<DnsCache>>,
 }
 
 /// Dashboard event for real-time UI updates via broadcast channel
@@ -68,6 +70,7 @@ pub struct AppState {
     pub log_buffer: Option<Arc<LogBuffer>>,
     pub message_bus: Option<Arc<dyn MessageBus>>,
     pub event_tx: broadcast::Sender<DashboardEvent>,
+    pub recursor_cache: Option<Arc<DnsCache>>,
 }
 
 impl ApiServer {
@@ -86,7 +89,13 @@ impl ApiServer {
             log_buffer: None,
             message_bus: None,
             event_tx,
+            recursor_cache: None,
         }
+    }
+
+    pub fn with_recursor_cache(mut self, cache: Arc<DnsCache>) -> Self {
+        self.recursor_cache = Some(cache);
+        self
     }
 
     pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
@@ -150,6 +159,7 @@ impl ApiServer {
             log_buffer: self.log_buffer,
             message_bus: self.message_bus,
             event_tx: self.event_tx,
+            recursor_cache: self.recursor_cache,
         };
 
         // API router: /api/v1 routes with body limit + api_key auth + CORS

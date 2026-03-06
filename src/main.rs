@@ -283,12 +283,15 @@ async fn main() -> Result<()> {
     }
 
     // Start recursive DNS server
+    let mut recursor_cache = None;
     if let Some(ref recursor_config) = config.dns.recursor {
         if recursor_config.enabled {
             let server = microdns_recursor::RecursorServer::new(
                 recursor_config,
                 Some(db.clone()),
             )?;
+            // Share the recursor cache with the REST API so mutations can invalidate it
+            recursor_cache = Some(server.resolver().cache_arc());
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = server.run(rx).await {
@@ -498,6 +501,10 @@ async fn main() -> Result<()> {
                 .with_dhcp_status(dhcp_status)
                 .with_log_buffer(log_buffer.clone())
                 .with_dashboard_addr(dashboard_addr);
+
+            if let Some(cache) = recursor_cache.clone() {
+                api = api.with_recursor_cache(cache);
+            }
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());

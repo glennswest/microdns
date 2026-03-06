@@ -1332,6 +1332,7 @@ dependencies = [
  "microdns-core",
  "microdns-federation",
  "microdns-msg",
+ "microdns-recursor",
  "prost",
  "redb",
  "serde",

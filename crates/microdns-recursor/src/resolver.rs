@@ -89,14 +89,12 @@ impl Resolver {
 
         debug!("recursor query: {} {}", qname, qtype);
 
-        // Step 1: Check local authoritative zones (skip if zone is in forward table)
+        // Step 1: Check local authoritative zones FIRST (always prefer local data)
         if let Some(ref db) = self.db {
-            if self.find_forward_servers(&qname_lower).is_none() {
-                let lower = LowerName::from(qname.clone());
-                if let Ok(Some(_zone)) = db.find_zone_for_fqdn(&qname_lower) {
-                    debug!("resolving {} {} from local auth zone", qname, qtype);
-                    return self.resolve_from_local(db, &request, &lower, qtype, true);
-                }
+            let lower = LowerName::from(qname.clone());
+            if let Ok(Some(_zone)) = db.find_zone_for_fqdn(&qname_lower) {
+                debug!("resolving {} {} from local auth zone", qname, qtype);
+                return self.resolve_from_local(db, &request, &lower, qtype, true);
             }
         }
 
@@ -300,6 +298,10 @@ impl Resolver {
 
     pub fn cache(&self) -> &DnsCache {
         &self.cache
+    }
+
+    pub fn cache_arc(&self) -> Arc<DnsCache> {
+        self.cache.clone()
     }
 }
 

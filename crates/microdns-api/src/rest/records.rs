@@ -150,6 +150,11 @@ async fn create_record(
     // Increment SOA serial
     let _ = state.db.increment_soa_serial(&zone_id);
 
+    // Invalidate recursor cache so new records are served immediately
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
+
     let _ = state.event_tx.send(DashboardEvent::RecordChanged {
         action: "ADDED".to_string(),
         zone_id: zone_id.to_string(),
@@ -222,6 +227,11 @@ async fn update_record(
 
     let _ = state.db.increment_soa_serial(&zone_id);
 
+    // Invalidate recursor cache so updated records are served immediately
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
+
     let _ = state.event_tx.send(DashboardEvent::RecordChanged {
         action: "MODIFIED".to_string(),
         zone_id: zone_id.to_string(),
@@ -258,6 +268,11 @@ async fn delete_record(
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     let _ = state.db.increment_soa_serial(&zone_id);
+
+    // Invalidate recursor cache so deleted records stop resolving immediately
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
 
     let _ = state.event_tx.send(DashboardEvent::RecordChanged {
         action: "DELETED".to_string(),

@@ -125,6 +125,11 @@ async fn create_zone(
         .create_zone(&name, &zone)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
 
+    // Invalidate recursor cache — new zone changes resolution behavior
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
+
     let _ = state.event_tx.send(DashboardEvent::ZoneChanged {
         action: "ADDED".to_string(),
         zone_id: zone.id.to_string(),
@@ -179,6 +184,11 @@ async fn delete_zone(
         .db
         .delete_zone(&id)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    // Invalidate recursor cache — deleted zone changes resolution behavior
+    if let Some(ref cache) = state.recursor_cache {
+        cache.clear();
+    }
 
     let _ = state.event_tx.send(DashboardEvent::ZoneChanged {
         action: "DELETED".to_string(),
