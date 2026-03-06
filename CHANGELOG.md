@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 2026-03-06
+- **fix:** DHCP pool allocator loads from DB, not TOML — root cause of "no available IPs" when mkube pushes pools via REST API
+- **fix:** Removed `from_db()` constructor (redundant with `new()` which now loads from DB)
+- **fix:** `get_reservation()` reads DB only, removed TOML config fallback
+- **fix:** `sync_pool()` rebuilds full pool list from DB every 60s (picks up pools added via REST after boot)
+- **fix:** `/dhcp/status` endpoint reads pools and reservations from DB, not TOML config
+- **refactor:** Removed `reservations` HashMap field and all TOML pool/reservation loading from DHCP server
+
 ### 2026-03-05
 - **feat:** Database-driven DHCP/DNS config — all pools, reservations, forwarders stored in redb, CRUD via REST API
 - **feat:** New redb tables: `dhcp_pools`, `dhcp_reservations`, `dns_forwarders`, `instance_config` with full CRUD
