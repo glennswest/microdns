@@ -464,14 +464,15 @@ async fn main() -> Result<()> {
                 .map(|c| c.pools.clone())
                 .unwrap_or_default();
 
-            // Build DHCP status summary for API
+            // Build DHCP status summary from DB (source of truth for pools/reservations)
             let dhcp_status = if let Some(ref dhcp_cfg) = config.dhcp {
                 if let Some(ref v4) = dhcp_cfg.v4 {
+                    let db_pools = db.list_dhcp_pools().unwrap_or_default();
+                    let db_res_count = db.list_dhcp_reservations().map(|r| r.len()).unwrap_or(0);
                     microdns_api::DhcpStatusConfig {
                         enabled: v4.enabled,
                         interface: v4.interface.clone(),
-                        pools: v4
-                            .pools
+                        pools: db_pools
                             .iter()
                             .map(|p| microdns_api::rest::dhcp::DhcpPoolSummary {
                                 range_start: p.range_start.clone(),
@@ -479,11 +480,11 @@ async fn main() -> Result<()> {
                                 subnet: p.subnet.clone(),
                                 gateway: p.gateway.clone(),
                                 domain: p.domain.clone(),
-                                lease_time_secs: p.lease_time_secs,
+                                lease_time_secs: p.lease_time_secs as u64,
                                 pxe_enabled: p.next_server.is_some(),
                             })
                             .collect(),
-                        reservation_count: v4.reservations.len(),
+                        reservation_count: db_res_count,
                     }
                 } else {
                     microdns_api::DhcpStatusConfig::default()
