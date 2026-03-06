@@ -7,7 +7,6 @@ use microdns_core::db::Db;
 use microdns_core::types::DhcpDbReservation;
 use microdns_msg::events::Event;
 use microdns_msg::MessageBus;
-use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,10 +32,8 @@ pub struct Dhcpv4Server {
     db: Db,
     mode: DhcpMode,
     pools: Arc<Mutex<Vec<Ipv4Pool>>>,
-    /// PXE config per pool index
-    pxe_configs: Vec<Option<PxeConfig>>,
-    /// MAC → (IP, hostname) from config file reservations (immutable at startup)
-    reservations: HashMap<String, (Ipv4Addr, Option<String>)>,
+    /// PXE config per pool index (rebuilt from DB on sync)
+    pxe_configs: Arc<Mutex<Vec<Option<PxeConfig>>>>,
     server_ip: Ipv4Addr,
     lease_manager: Arc<LeaseManager>,
     dns_registrar: Option<Arc<DnsRegistrar>>,
@@ -52,45 +49,44 @@ impl Dhcpv4Server {
         let mut pools = Vec::new();
         let mut pxe_configs = Vec::new();
 
-        for pool_cfg in &config.pools {
+        // Load pools from database (REST API is the source of truth)
+        let db_pools = db.list_dhcp_pools().unwrap_or_default();
+        for pool_cfg in &db_pools {
             let prefix_len = prefix_len_from_subnet(&pool_cfg.subnet).unwrap_or(24);
             let mask = subnet_mask_from_prefix(prefix_len);
             let dns_servers: Vec<Ipv4Addr> = pool_cfg
-                .dns
+                .dns_servers
                 .iter()
                 .filter_map(|s| s.parse().ok())
                 .collect();
 
-            pools.push(Ipv4Pool::new(
-                pool_cfg.range_start.parse()?,
-                pool_cfg.range_end.parse()?,
-                mask,
-                pool_cfg.gateway.parse()?,
-                dns_servers,
-                pool_cfg.domain.clone(),
-                pool_cfg.lease_time_secs as u32,
-            ));
-
-            let pxe = match (&pool_cfg.next_server, &pool_cfg.boot_file) {
-                (Some(ns), Some(bf)) => Some(PxeConfig {
-                    next_server: ns.parse()?,
-                    boot_file: bf.clone(),
-                    boot_file_efi: pool_cfg.boot_file_efi.clone(),
-                    ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
-                    root_path: pool_cfg.root_path.clone()
-                }),
-                _ => None,
-            };
-            pxe_configs.push(pxe);
+            if let (Ok(rs), Ok(re), Ok(gw)) = (
+                pool_cfg.range_start.parse(),
+                pool_cfg.range_end.parse(),
+                pool_cfg.gateway.parse(),
+            ) {
+                pools.push(Ipv4Pool::new(
+                    rs, re, mask, gw, dns_servers,
+                    pool_cfg.domain.clone(),
+                    pool_cfg.lease_time_secs as u32,
+                ));
+                let pxe = match (&pool_cfg.next_server, &pool_cfg.boot_file) {
+                    (Some(ns), Some(bf)) => Some(PxeConfig {
+                        next_server: ns.parse().unwrap_or(Ipv4Addr::UNSPECIFIED),
+                        boot_file: bf.clone(),
+                        boot_file_efi: pool_cfg.boot_file_efi.clone(),
+                        ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
+                        root_path: pool_cfg.root_path.clone(),
+                    }),
+                    _ => None,
+                };
+                pxe_configs.push(pxe);
+            }
         }
 
-        // Parse reservations
-        let mut reservations = HashMap::new();
-        for res in &config.reservations {
-            let mac = res.mac.to_lowercase();
-            let ip: Ipv4Addr = res.ip.parse()?;
-            reservations.insert(mac, (ip, res.hostname.clone()));
-        }
+        info!("loaded {} DHCP pools from database", pools.len());
+
+        // Reservations come from DB via get_reservation() — no config loading
 
         // Use configured server_ip if provided, otherwise fall back to first
         // pool's gateway. The server_ip is used for siaddr and option 54 (server
@@ -111,8 +107,7 @@ impl Dhcpv4Server {
             db,
             mode: config.mode,
             pools: Arc::new(Mutex::new(pools)),
-            pxe_configs,
-            reservations,
+            pxe_configs: Arc::new(Mutex::new(pxe_configs)),
             server_ip,
             lease_manager,
             dns_registrar: None,
@@ -122,82 +117,14 @@ impl Dhcpv4Server {
         })
     }
 
-    /// Create a DHCP server that loads pool definitions from the database.
-    /// Reservations are read from DB on every request — no in-memory cache.
-    pub fn from_db(
-        db: Db,
-        mode: DhcpMode,
-        server_ip: Option<Ipv4Addr>,
-    ) -> anyhow::Result<Self> {
-        let db_pools = db.list_dhcp_pools().unwrap_or_default();
-        let mut pools = Vec::new();
-        let mut pxe_configs = Vec::new();
-
-        for pool_cfg in &db_pools {
-            let prefix_len = prefix_len_from_subnet(&pool_cfg.subnet).unwrap_or(24);
-            let mask = subnet_mask_from_prefix(prefix_len);
-            let dns_servers: Vec<Ipv4Addr> = pool_cfg
-                .dns_servers
-                .iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-
-            pools.push(Ipv4Pool::new(
-                pool_cfg.range_start.parse()?,
-                pool_cfg.range_end.parse()?,
-                mask,
-                pool_cfg.gateway.parse()?,
-                dns_servers,
-                pool_cfg.domain.clone(),
-                pool_cfg.lease_time_secs as u32,
-            ));
-
-            let pxe = match (&pool_cfg.next_server, &pool_cfg.boot_file) {
-                (Some(ns), Some(bf)) => Some(PxeConfig {
-                    next_server: ns.parse()?,
-                    boot_file: bf.clone(),
-                    boot_file_efi: pool_cfg.boot_file_efi.clone(),
-                    ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
-                    root_path: pool_cfg.root_path.clone(),
-                }),
-                _ => None,
-            };
-            pxe_configs.push(pxe);
-        }
-
-        let effective_server_ip = server_ip
-            .or_else(|| pools.first().map(|p| p.gateway))
-            .unwrap_or(Ipv4Addr::UNSPECIFIED);
-
-        let lease_manager = Arc::new(LeaseManager::new(db.clone()));
-
-        Ok(Self {
-            _config: None,
-            db,
-            mode,
-            pools: Arc::new(Mutex::new(pools)),
-            pxe_configs,
-            reservations: HashMap::new(), // DB-only mode — no config file reservations
-            server_ip: effective_server_ip,
-            lease_manager,
-            dns_registrar: None,
-            message_bus: None,
-            instance_id: String::new(),
-            lease_event_tx: None,
-        })
-    }
-
-    /// Look up a reservation by MAC. Checks database first, then falls back
-    /// to config-file reservations.
+    /// Look up a reservation by MAC from the database.
     fn get_reservation(&self, mac: &str) -> Option<(Ipv4Addr, Option<String>)> {
-        // Database is the live source of truth
         if let Ok(Some(res)) = self.db.get_dhcp_reservation(mac) {
             if let Ok(ip) = res.ip.parse() {
                 return Some((ip, res.hostname.clone()));
             }
         }
-        // Fall back to static config-file reservations
-        self.reservations.get(mac).cloned()
+        None
     }
 
     /// Get full reservation details from DB (for per-reservation option overrides).
@@ -818,30 +745,33 @@ impl Dhcpv4Server {
         // encapsulated options, always sent by iPXE) or user-class "iPXE".
         // Per-reservation PXE overrides take precedence over pool PXE config.
         let pxe_idx = pool_idx.unwrap_or(0);
-        let pool_pxe = self.pxe_configs.get(pxe_idx).and_then(|p| p.as_ref());
+        let pool_pxe = {
+            let pxe_configs = self.pxe_configs.lock().await;
+            pxe_configs.get(pxe_idx).cloned().flatten()
+        };
 
         // Build effective PXE config from per-reservation overrides or pool config
         let effective_next_server = db_res
             .as_ref()
             .and_then(|r| r.next_server.as_ref())
             .and_then(|s| s.parse().ok())
-            .or_else(|| pool_pxe.map(|p| p.next_server));
+            .or_else(|| pool_pxe.as_ref().map(|p| p.next_server));
         let effective_boot_file = db_res
             .as_ref()
             .and_then(|r| r.boot_file.clone())
-            .or_else(|| pool_pxe.map(|p| p.boot_file.clone()));
+            .or_else(|| pool_pxe.as_ref().map(|p| p.boot_file.clone()));
         let effective_boot_file_efi = db_res
             .as_ref()
             .and_then(|r| r.boot_file_efi.clone())
-            .or_else(|| pool_pxe.and_then(|p| p.boot_file_efi.clone()));
+            .or_else(|| pool_pxe.as_ref().and_then(|p| p.boot_file_efi.clone()));
         let effective_ipxe_url = db_res
             .as_ref()
             .and_then(|r| r.ipxe_boot_url.clone())
-            .or_else(|| pool_pxe.and_then(|p| p.ipxe_boot_url.clone()));
+            .or_else(|| pool_pxe.as_ref().and_then(|p| p.ipxe_boot_url.clone()));
         let effective_root_path = db_res
             .as_ref()
             .and_then(|r| r.root_path.clone())
-            .or_else(|| pool_pxe.and_then(|p| p.root_path.clone()));
+            .or_else(|| pool_pxe.as_ref().and_then(|p| p.root_path.clone()));
 
         // Option 17 (root-path) — always send when set, independent of PXE
         // boot chain config. Used by iPXE for direct sanboot from iSCSI target.
@@ -959,69 +889,102 @@ impl Dhcpv4Server {
         }
 
         // Pre-allocate all reservation IPs so they're never given to other clients
-        // (both DB reservations and config-file reservations)
         for res in &db_reservations {
             if let Ok(ip) = res.ip.parse::<Ipv4Addr>() {
                 for pool in pools.iter_mut() {
                     pool.mark_allocated(ip);
                 }
-            }
-        }
-        for (_mac, (ip, _hostname)) in &self.reservations {
-            for pool in pools.iter_mut() {
-                pool.mark_allocated(*ip);
             }
         }
 
         info!(
-            "restored {} active leases, {} DB reservations, {} config reservations",
+            "restored {} active leases, {} DB reservations",
             leases.len(),
-            db_reservations.len(),
-            self.reservations.len()
+            db_reservations.len()
         );
         Ok(())
     }
 
-    /// Re-synchronise the pool's in-memory allocated set with the database.
-    /// This frees IPs from expired/released leases that were never explicitly
-    /// released by the client (most clients skip DHCP Release).
+    /// Re-synchronise pools from the database. Rebuilds the full pool list
+    /// (picks up pools added/removed via REST API after boot) and marks
+    /// active leases + reservations as allocated.
     async fn sync_pool(&self) -> anyhow::Result<()> {
         let active_leases = self.lease_manager.list_active_leases()?;
         let db_reservations = self.db.list_dhcp_reservations().unwrap_or_default();
-        let mut pools = self.pools.lock().await;
 
-        for pool in pools.iter_mut() {
-            pool.clear_allocated();
+        // Rebuild pools from DB
+        let db_pools = self.db.list_dhcp_pools().unwrap_or_default();
+        let mut new_pools = Vec::new();
+        let mut new_pxe_configs = Vec::new();
+
+        for pool_cfg in &db_pools {
+            let prefix_len = prefix_len_from_subnet(&pool_cfg.subnet).unwrap_or(24);
+            let mask = subnet_mask_from_prefix(prefix_len);
+            let dns_servers: Vec<Ipv4Addr> = pool_cfg
+                .dns_servers
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+
+            if let (Ok(rs), Ok(re), Ok(gw)) = (
+                pool_cfg.range_start.parse::<Ipv4Addr>(),
+                pool_cfg.range_end.parse::<Ipv4Addr>(),
+                pool_cfg.gateway.parse::<Ipv4Addr>(),
+            ) {
+                new_pools.push(Ipv4Pool::new(
+                    rs, re, mask, gw, dns_servers,
+                    pool_cfg.domain.clone(),
+                    pool_cfg.lease_time_secs as u32,
+                ));
+                let pxe = match (&pool_cfg.next_server, &pool_cfg.boot_file) {
+                    (Some(ns), Some(bf)) => Some(PxeConfig {
+                        next_server: ns.parse().unwrap_or(Ipv4Addr::UNSPECIFIED),
+                        boot_file: bf.clone(),
+                        boot_file_efi: pool_cfg.boot_file_efi.clone(),
+                        ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
+                        root_path: pool_cfg.root_path.clone(),
+                    }),
+                    _ => None,
+                };
+                new_pxe_configs.push(pxe);
+            }
         }
 
-        // Re-mark active leases
+        // Mark active leases
         for lease in &active_leases {
             if let Ok(ip) = lease.ip_addr.parse::<Ipv4Addr>() {
-                for pool in pools.iter_mut() {
+                for pool in new_pools.iter_mut() {
                     pool.mark_allocated(ip);
                 }
             }
         }
 
-        // Re-mark reservations from DB + config (must never be handed out to other clients)
+        // Mark reservations (must never be handed out to other clients)
         for res in &db_reservations {
             if let Ok(ip) = res.ip.parse::<Ipv4Addr>() {
-                for pool in pools.iter_mut() {
+                for pool in new_pools.iter_mut() {
                     pool.mark_allocated(ip);
                 }
             }
         }
-        for (_mac, (ip, _hostname)) in &self.reservations {
-            for pool in pools.iter_mut() {
-                pool.mark_allocated(*ip);
-            }
+
+        let avail: u32 = new_pools.iter().map(|p| p.available_count()).sum();
+
+        // Swap in rebuilt pools and pxe_configs
+        {
+            let mut pools = self.pools.lock().await;
+            *pools = new_pools;
+        }
+        {
+            let mut pxe = self.pxe_configs.lock().await;
+            *pxe = new_pxe_configs;
         }
 
-        let avail: u32 = pools.iter().map(|p| p.available_count()).sum();
         debug!(
-            "pool sync: {} active leases, {} reservations, {} available",
+            "pool sync: {} pools, {} active leases, {} reservations, {} available",
+            db_pools.len(),
             active_leases.len(),
-            db_reservations.len() + self.reservations.len(),
+            db_reservations.len(),
             avail
         );
         Ok(())
