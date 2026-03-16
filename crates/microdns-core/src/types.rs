@@ -208,12 +208,19 @@ pub struct ReplicationMeta {
     pub source_serial: u32,
 }
 
-/// Classless static route for DHCP option 121
+/// Classless static route for DHCP option 121 (RFC 3442)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StaticRoute {
-    /// CIDR notation, e.g. "10.0.0.0/8"
+    /// Unique ID for this route (auto-generated if not provided)
+    #[serde(default = "Uuid::new_v4")]
+    pub id: Uuid,
+    /// CIDR notation, e.g. "169.254.169.254/32"
     pub destination: String,
+    /// Next-hop gateway IPv4 address
     pub gateway: String,
+    /// Who manages this route (e.g. "cloudid", "manual")
+    #[serde(default)]
+    pub managed_by: Option<String>,
 }
 
 /// DHCP pool stored in database (replaces TOML-based DhcpV4Pool)

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-16
+- **feat:** REST API for DHCP pool static routes: `GET/POST /api/v1/dhcp/pools/{id}/routes`, `DELETE /api/v1/dhcp/pools/{id}/routes/{route_id}`
+- **feat:** DHCP option 121 (RFC 3442) emitted from pool-level static routes, with automatic default route (`0.0.0.0/0 via gateway`) injection
+- **feat:** `StaticRoute` now has `id` (UUID) and `managed_by` fields for route ownership tracking (e.g. CloudID)
+- **feat:** Duplicate route detection (same destination+gateway returns existing with 200 OK)
+- **fix:** Pool-level static routes now served to all clients in a pool, not just per-reservation
+
 ### 2026-03-06
 - **fix:** DHCP pool allocator loads from DB, not TOML — root cause of "no available IPs" when mkube pushes pools via REST API
 - **fix:** Removed `from_db()` constructor (redundant with `new()` which now loads from DB)

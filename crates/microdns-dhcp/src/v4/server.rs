@@ -649,6 +649,9 @@ impl Dhcpv4Server {
         // Read per-reservation overrides directly from database
         let db_res = self.get_db_reservation(&mac);
 
+        // Read DB pools for extended options (static_routes etc.)
+        let db_pools = self.db.list_dhcp_pools().unwrap_or_default();
+
         let pools = self.pools.lock().await;
         let pool_idx = pools.iter().position(|p| p.contains(ip));
         let pool = pool_idx.map(|i| &pools[i]);
@@ -719,15 +722,6 @@ impl Dhcpv4Server {
                     options.push(domain_search_option(domains));
                 }
             }
-            if let Some(ref routes) = res.static_routes {
-                let parsed: Vec<(String, Ipv4Addr)> = routes
-                    .iter()
-                    .filter_map(|r| r.gateway.parse().ok().map(|gw| (r.destination.clone(), gw)))
-                    .collect();
-                if !parsed.is_empty() {
-                    options.push(classless_static_routes_option(&parsed));
-                }
-            }
             if let Some(ref log_srv) = res.log_server {
                 if let Ok(addr) = log_srv.parse() {
                     options.push(ip_option(OPT_LOG_SERVER, addr));
@@ -738,6 +732,44 @@ impl Dhcpv4Server {
             }
             if let Some(ref wpad) = res.wpad_url {
                 options.push(string_option(OPT_WPAD, wpad));
+            }
+        }
+
+        // Option 121 (Classless Static Routes, RFC 3442)
+        // Merge pool-level routes with per-reservation overrides.
+        // Per RFC 3442: when option 121 is present, clients MUST ignore option 3
+        // (router), so we always include the default route 0.0.0.0/0 via gateway.
+        {
+            let effective_idx = pool_idx.unwrap_or(0);
+            let db_pool = db_pools.get(effective_idx);
+
+            // Per-reservation routes override pool routes if set
+            let route_source = db_res
+                .as_ref()
+                .and_then(|r| r.static_routes.as_ref())
+                .or_else(|| db_pool.and_then(|p| p.static_routes.as_ref()));
+
+            if let Some(routes) = route_source {
+                let mut parsed: Vec<(String, Ipv4Addr)> = routes
+                    .iter()
+                    .filter_map(|r| r.gateway.parse().ok().map(|gw| (r.destination.clone(), gw)))
+                    .collect();
+
+                if !parsed.is_empty() {
+                    // Inject default route so client retains gateway
+                    let gw = db_res
+                        .as_ref()
+                        .and_then(|r| r.gateway.as_ref())
+                        .and_then(|s| s.parse().ok())
+                        .or_else(|| effective_pool.map(|p| p.gateway))
+                        .unwrap_or(self.server_ip);
+
+                    if !parsed.iter().any(|(dest, _)| dest == "0.0.0.0/0") {
+                        parsed.insert(0, ("0.0.0.0/0".to_string(), gw));
+                    }
+
+                    options.push(classless_static_routes_option(&parsed));
+                }
             }
         }
 

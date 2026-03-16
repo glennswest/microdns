@@ -4,6 +4,7 @@ pub mod dhcp;
 pub mod dhcp_config;
 pub mod dhcp_pools;
 pub mod dhcp_reservations;
+pub mod dhcp_routes;
 pub mod dns_forwarders;
 pub mod health;
 pub mod ipam;
@@ -29,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .merge(logs::router())
         .merge(dhcp_pools::router())
         .merge(dhcp_reservations::router())
+        .merge(dhcp_routes::router())
         .merge(dhcp_config::router())
         .merge(dns_forwarders::router())
         .merge(watch::router())
