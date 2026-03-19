@@ -706,33 +706,70 @@ impl Dhcpv4Server {
             }
         }
 
-        // Extended options from per-reservation overrides (read from DB)
-        if let Some(ref res) = db_res {
-            if let Some(ref ntp) = res.ntp_servers {
-                let addrs: Vec<Ipv4Addr> = ntp.iter().filter_map(|s| s.parse().ok()).collect();
-                if !addrs.is_empty() {
-                    options.push(ip_list_option(OPT_NTP_SERVERS, &addrs));
-                }
+        // Extended options: per-reservation override → pool default.
+        // Reservations inherit all pool options not explicitly overridden.
+        let effective_idx = pool_idx.unwrap_or(0);
+        let db_pool = db_pools.get(effective_idx);
+
+        // NTP servers
+        let ntp_source = db_res
+            .as_ref()
+            .and_then(|r| r.ntp_servers.as_ref())
+            .or_else(|| db_pool.and_then(|p| p.ntp_servers.as_ref()));
+        if let Some(ntp) = ntp_source {
+            let addrs: Vec<Ipv4Addr> = ntp.iter().filter_map(|s| s.parse().ok()).collect();
+            if !addrs.is_empty() {
+                options.push(ip_list_option(OPT_NTP_SERVERS, &addrs));
             }
-            if let Some(mtu) = res.mtu {
-                options.push(u16_option(OPT_MTU, mtu));
+        }
+
+        // MTU
+        let mtu = db_res
+            .as_ref()
+            .and_then(|r| r.mtu)
+            .or_else(|| db_pool.and_then(|p| p.mtu));
+        if let Some(mtu) = mtu {
+            options.push(u16_option(OPT_MTU, mtu));
+        }
+
+        // Domain search
+        let domain_search = db_res
+            .as_ref()
+            .and_then(|r| r.domain_search.as_ref())
+            .or_else(|| db_pool.and_then(|p| p.domain_search.as_ref()));
+        if let Some(domains) = domain_search {
+            if !domains.is_empty() {
+                options.push(domain_search_option(domains));
             }
-            if let Some(ref domains) = res.domain_search {
-                if !domains.is_empty() {
-                    options.push(domain_search_option(domains));
-                }
+        }
+
+        // Log server
+        let log_srv = db_res
+            .as_ref()
+            .and_then(|r| r.log_server.as_ref())
+            .or_else(|| db_pool.and_then(|p| p.log_server.as_ref()));
+        if let Some(srv) = log_srv {
+            if let Ok(addr) = srv.parse() {
+                options.push(ip_option(OPT_LOG_SERVER, addr));
             }
-            if let Some(ref log_srv) = res.log_server {
-                if let Ok(addr) = log_srv.parse() {
-                    options.push(ip_option(OPT_LOG_SERVER, addr));
-                }
-            }
-            if let Some(offset) = res.time_offset {
-                options.push(i32_option(OPT_TIME_OFFSET, offset));
-            }
-            if let Some(ref wpad) = res.wpad_url {
-                options.push(string_option(OPT_WPAD, wpad));
-            }
+        }
+
+        // Time offset
+        let time_offset = db_res
+            .as_ref()
+            .and_then(|r| r.time_offset)
+            .or_else(|| db_pool.and_then(|p| p.time_offset));
+        if let Some(offset) = time_offset {
+            options.push(i32_option(OPT_TIME_OFFSET, offset));
+        }
+
+        // WPAD URL
+        let wpad = db_res
+            .as_ref()
+            .and_then(|r| r.wpad_url.as_ref())
+            .or_else(|| db_pool.and_then(|p| p.wpad_url.as_ref()));
+        if let Some(url) = wpad {
+            options.push(string_option(OPT_WPAD, url));
         }
 
         // Option 121 (Classless Static Routes, RFC 3442)
@@ -740,8 +777,6 @@ impl Dhcpv4Server {
         // Per RFC 3442: when option 121 is present, clients MUST ignore option 3
         // (router), so we always include the default route 0.0.0.0/0 via gateway.
         {
-            let effective_idx = pool_idx.unwrap_or(0);
-            let db_pool = db_pools.get(effective_idx);
 
             // Per-reservation routes override pool routes if set
             let route_source = db_res

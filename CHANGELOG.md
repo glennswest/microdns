@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-18
+- **fix:** DHCP reservations now inherit all extended options (NTP, MTU, domain search, log server, time offset, WPAD) from pool when not explicitly overridden — previously these options were only emitted when set directly on the reservation
+
 ### 2026-03-16
 - **feat:** REST API for DHCP pool static routes: `GET/POST /api/v1/dhcp/pools/{id}/routes`, `DELETE /api/v1/dhcp/pools/{id}/routes/{route_id}`
 - **feat:** DHCP option 121 (RFC 3442) emitted from pool-level static routes, with automatic default route (`0.0.0.0/0 via gateway`) injection
