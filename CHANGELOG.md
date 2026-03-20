@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-03-20
+- **fix:** Add comprehensive DNS forwarding across all networks — each instance now forwards to all other networks (g8, g9, g10, g11, gt, gw) including reverse zones (in-addr.arpa) and utility zones (pv.lo, bm.lo, ipmi.lo)
+- **fix:** Corrected stale DNS forwarder IPs in gt config (192.168.10.199 → 192.168.10.252, 192.168.11.199 → 192.168.11.252)
+
 ### 2026-03-18
 - **fix:** DHCP reservations now inherit all extended options (NTP, MTU, domain search, log server, time offset, WPAD) from pool when not explicitly overridden — previously these options were only emitted when set directly on the reservation
 
