@@ -56,6 +56,7 @@ subnet = "192.168.10.0/24"
 gateway = "192.168.10.1"
 dns = ["192.168.10.252"]
 domain = "g10.lo"
+domain_search = ["g10.lo", "gt.lo", "gw.lo", "g11.lo", "g8.lo", "g9.lo", "pv.lo", "bm.lo", "ipmi.lo"]
 lease_time_secs = 600
 next_server = "192.168.200.210"
 boot_file = "undionly.kpxe"

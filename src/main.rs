@@ -638,7 +638,7 @@ fn migrate_toml_to_db(config: &Config, db: &Db) {
                     ipxe_boot_url: pool_cfg.ipxe_boot_url.clone(),
                     root_path: pool_cfg.root_path.clone(),
                     ntp_servers: None,
-                    domain_search: None,
+                    domain_search: pool_cfg.domain_search.clone(),
                     mtu: None,
                     static_routes: None,
                     log_server: None,

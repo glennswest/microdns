@@ -177,6 +177,8 @@ pub struct DhcpV4Pool {
     pub ipxe_boot_url: Option<String>,
     #[serde(default)]
     pub root_path: Option<String>,
+    #[serde(default)]
+    pub domain_search: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
