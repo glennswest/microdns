@@ -696,13 +696,28 @@ impl Dhcpv4Server {
                 options.push(ip_list_option(OPT_DNS_SERVER, dns));
             }
 
-            // Domain name
-            let domain = db_res
+            // Domain name (option 15).
+            // Skip when domain_search (option 119) is configured — option 15
+            // causes systemd-resolved to scope the DNS server to that single
+            // domain, breaking cross-network resolution. Option 119 provides
+            // both hostname completion and routing domains.
+            let effective_idx_pre = pool_idx.unwrap_or(0);
+            let db_pool_pre = db_pools.get(effective_idx_pre);
+            let has_domain_search = db_res
                 .as_ref()
-                .and_then(|r| r.domain.as_deref())
-                .unwrap_or(&pool.domain);
-            if !domain.is_empty() {
-                options.push(string_option(OPT_DOMAIN_NAME, domain));
+                .and_then(|r| r.domain_search.as_ref())
+                .or_else(|| db_pool_pre.and_then(|p| p.domain_search.as_ref()))
+                .map(|d| !d.is_empty())
+                .unwrap_or(false);
+
+            if !has_domain_search {
+                let domain = db_res
+                    .as_ref()
+                    .and_then(|r| r.domain.as_deref())
+                    .unwrap_or(&pool.domain);
+                if !domain.is_empty() {
+                    options.push(string_option(OPT_DOMAIN_NAME, domain));
+                }
             }
         }
 

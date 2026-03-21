@@ -7,6 +7,7 @@
 - **fix:** Corrected stale DNS forwarder IPs in gt config (192.168.10.199 → 192.168.10.252, 192.168.11.199 → 192.168.11.252)
 - **feat:** DHCP option 119 (domain search) includes all `.lo` zones so systemd-resolved routes cross-network queries to local microdns — fixes "Name not found" for e.g. `registry.gt.lo` on g10 clients
 - **feat:** `domain_search` field added to TOML pool config (`DhcpV4Pool`) and wired through TOML-to-DB migration
+- **fix:** Suppress DHCP option 15 (domain name) when option 119 (domain search) is configured — option 15 causes systemd-resolved to scope the DNS server to a single domain, breaking cross-network resolution
 
 ### 2026-03-18
 - **fix:** DHCP reservations now inherit all extended options (NTP, MTU, domain search, log server, time offset, WPAD) from pool when not explicitly overridden — previously these options were only emitted when set directly on the reservation
