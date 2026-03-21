@@ -188,13 +188,21 @@ impl Resolver {
         if let Some(rtype) = micro_rtype {
             let records = db.query_fqdn(fqdn, rtype).unwrap_or_default();
             if records.is_empty() {
-                // NXDOMAIN with SOA authority
+                // Add SOA to authority section
                 if let Ok(Some(zone)) = db.find_zone_for_fqdn(fqdn) {
                     if let Some(soa) = build_soa_record_proto(&zone) {
                         response.add_name_server(soa);
                     }
                 }
-                response.set_response_code(ResponseCode::NXDomain);
+                // NOERROR if the name exists (but no records of this type),
+                // NXDOMAIN only if the name truly doesn't exist.
+                // Critical for systemd-resolved parallel A+AAAA lookups.
+                let name_exists = db.fqdn_exists(fqdn).unwrap_or(false);
+                if name_exists {
+                    response.set_response_code(ResponseCode::NoError);
+                } else {
+                    response.set_response_code(ResponseCode::NXDomain);
+                }
             } else {
                 for record in &records {
                     if let Some(dns_record) = record_to_proto(record, db) {

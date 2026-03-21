@@ -185,7 +185,18 @@ impl AuthServer {
             if let Some(soa) = zone::get_authority_soa(catalog.db(), &qname) {
                 response.add_name_server(soa);
             }
-            response.set_response_code(ResponseCode::NXDomain);
+            // Check if the name exists with other record types.
+            // NXDOMAIN = name doesn't exist at all; NOERROR = name exists but
+            // no records of the queried type (critical for systemd-resolved
+            // which does parallel A+AAAA lookups).
+            let fqdn_str = qname.to_string();
+            let fqdn_str = fqdn_str.trim_end_matches('.');
+            let name_exists = catalog.db().fqdn_exists(fqdn_str).unwrap_or(false);
+            if name_exists {
+                response.set_response_code(ResponseCode::NoError);
+            } else {
+                response.set_response_code(ResponseCode::NXDomain);
+            }
         } else {
             for record in records {
                 response.add_answer(record);

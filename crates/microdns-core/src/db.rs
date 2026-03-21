@@ -316,6 +316,45 @@ impl Db {
         Ok(result)
     }
 
+    /// Check if a name exists in a zone (has any record of any type).
+    /// Used to distinguish NXDOMAIN (name doesn't exist) from NOERROR
+    /// (name exists but has no records of the queried type).
+    pub fn name_exists_in_zone(&self, zone_id: &Uuid, name: &str) -> Result<bool> {
+        let read_txn = self.inner.begin_read()?;
+        let by_zone = read_txn.open_table(RECORDS_BY_ZONE)?;
+
+        let prefix = format!("{zone_id}:{name}:");
+        let iter = by_zone.range(prefix.as_str()..)?;
+        for entry in iter {
+            let (key, _) = entry?;
+            if key.value().starts_with(&prefix) {
+                return Ok(true);
+            }
+            break; // past prefix range
+        }
+        Ok(false)
+    }
+
+    /// Check if a FQDN exists in any zone (has any record of any type).
+    /// Mirrors `query_fqdn` zone lookup logic but only checks existence.
+    /// Used to distinguish NXDOMAIN from NOERROR with empty answer section.
+    pub fn fqdn_exists(&self, fqdn: &str) -> Result<bool> {
+        let fqdn = fqdn.trim_end_matches('.');
+        let zones = self.list_zones()?;
+
+        for zone in &zones {
+            let zone_name = zone.name.trim_end_matches('.');
+            if fqdn == zone_name {
+                // Zone apex — the zone itself exists
+                return self.name_exists_in_zone(&zone.id, "@");
+            } else if let Some(prefix) = fqdn.strip_suffix(&format!(".{zone_name}")) {
+                return self.name_exists_in_zone(&zone.id, prefix);
+            }
+        }
+
+        Ok(false)
+    }
+
     /// List all records in a zone
     pub fn list_records(&self, zone_id: &Uuid) -> Result<Vec<Record>> {
         let read_txn = self.inner.begin_read()?;
