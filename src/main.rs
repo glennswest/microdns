@@ -593,9 +593,17 @@ async fn main() -> Result<()> {
         error!("message bus shutdown error: {e}");
     }
 
-    // Wait for all tasks to finish
-    for task in tasks {
-        let _ = task.await;
+    // Wait for all tasks to finish (bounded to 8s to avoid blocking container stop)
+    let task_shutdown = async {
+        for task in tasks {
+            let _ = task.await;
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(8), task_shutdown)
+        .await
+        .is_err()
+    {
+        warn!("shutdown timed out after 8s, exiting");
     }
 
     info!("microdns stopped");

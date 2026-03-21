@@ -213,14 +213,23 @@ impl ApiServer {
             None
         };
 
-        // Wait for both to complete
-        if let Err(e) = api_task.await? {
-            return Err(e.into());
-        }
-        if let Some(task) = dashboard_task {
-            if let Err(e) = task.await? {
-                return Err(e.into());
+        // Wait for both to complete, but don't block shutdown forever.
+        // Graceful shutdown waits for in-flight connections (WebSocket, SSE)
+        // which may never close. Give them 5s then abort.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            if let Err(e) = api_task.await {
+                tracing::error!("API server task error: {e}");
             }
+            if let Some(task) = dashboard_task {
+                if let Err(e) = task.await {
+                    tracing::error!("Dashboard task error: {e}");
+                }
+            }
+        })
+        .await;
+
+        if result.is_err() {
+            info!("API shutdown timed out after 5s, forcing close");
         }
 
         Ok(())
