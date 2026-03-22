@@ -23,7 +23,7 @@ echo "==> Preparing binary for scratch image..."
 cp target/aarch64-unknown-linux-musl/release/microdns microdns
 
 echo "==> Building container image with podman..."
-podman build --platform linux/arm64 \
+podman build --tls-verify=false --platform linux/arm64 \
     -f Dockerfile.scratch \
     -t "${REPO}:${TAG}" \
     .
