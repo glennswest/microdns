@@ -10,6 +10,7 @@
 - **fix:** Suppress DHCP option 15 (domain name) when option 119 (domain search) is configured — option 15 causes systemd-resolved to scope the DNS server to a single domain, breaking cross-network resolution
 - **fix:** Bounded shutdown timeout (8s) prevents container restart loops — axum graceful shutdown was waiting indefinitely for long-lived WebSocket/SSE connections to close
 - **fix:** Return NOERROR (not NXDOMAIN) for queries where the name exists but has no records of the queried type — fixes systemd-resolved parallel A+AAAA lookups where NXDOMAIN on AAAA was poisoning results for names that only have A records
+- **feat:** Switch container base from `scratch` to `stormdbase` — adds process supervision, SSH access, web dashboard, liveness probes, structured logging, and busybox commands
 
 ### 2026-03-18
 - **fix:** DHCP reservations now inherit all extended options (NTP, MTU, domain search, log server, time offset, WPAD) from pool when not explicitly overridden — previously these options were only emitted when set directly on the reservation

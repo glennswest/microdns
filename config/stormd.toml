@@ -1,0 +1,33 @@
+[general]
+name = "microdns"
+
+[api]
+bind = "0.0.0.0:9080"
+
+[ssh]
+enabled = true
+bind = "0.0.0.0:22"
+password = "stormd"
+
+[log]
+timestamps = true
+
+[[process]]
+name = "microdns"
+command = "/microdns"
+args = ["--config", "/etc/microdns/microdns.toml"]
+on_failure = "restart"
+on_exit = "restart"
+restart_delay_secs = 2
+max_restarts = 100
+restart_window_secs = 3600
+capture_stdout = true
+capture_stderr = true
+
+[process.liveness]
+type = "tcp"
+port = 53
+interval_secs = 10
+timeout_secs = 5
+failure_threshold = 3
+initial_delay_secs = 5

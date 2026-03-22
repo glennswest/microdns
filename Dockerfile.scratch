@@ -1,7 +1,7 @@
-FROM scratch
+FROM registry.gt.lo:5000/stormdbase:latest
 COPY microdns /microdns
 COPY config/microdns.toml /etc/microdns/microdns.toml
+COPY config/stormd.toml /etc/stormd/config.toml
 VOLUME ["/data"]
-EXPOSE 53/udp 53/tcp 67/udp 80/tcp 8080/tcp 50051/tcp
-ENTRYPOINT ["/microdns"]
-CMD ["--config", "/etc/microdns/microdns.toml"]
+EXPOSE 53/udp 53/tcp 67/udp 80/tcp 8080/tcp 50051/tcp 9080/tcp 22/tcp
+ENTRYPOINT ["/stormd"]
