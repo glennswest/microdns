@@ -8,28 +8,43 @@ Designed for an instance-per-network federated topology where each subnet runs i
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                      MicroDNS Binary                     │
-│                                                          │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────────┐  │
-│  │ Auth DNS   │  │ Recursor   │  │ Load Balancer      │  │
-│  │ :53        │  │ :53/:5353  │  │ Health Monitor     │  │
-│  └────────────┘  └────────────┘  └────────────────────┘  │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────────┐  │
-│  │ DHCPv4 :67 │  │ DHCPv6     │  │ SLAAC RA           │  │
-│  │            │  │ :547       │  │                    │  │
-│  └────────────┘  └────────────┘  └────────────────────┘  │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────────┐  │
-│  │ REST API   │  │ gRPC API   │  │ Dashboard + WS     │  │
-│  │ :8080      │  │ :50051     │  │ :80/dashboard      │  │
-│  └────────────┘  └────────────┘  └────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              redb (embedded database)               │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌────────────────────┐  ┌─────────────────────────────┐  │
-│  │ Federation Agent   │  │ Message Bus (Kafka/NoOp)    │  │
-│  └────────────────────┘  └─────────────────────────────┘  │
+│                     stormd (PID 1)                        │
+│         process supervisor, SSH, web dashboard            │
+│  ┌────────────────────────────────────────────────────┐   │
+│  │                  MicroDNS Binary                    │   │
+│  │                                                     │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │   │
+│  │  │ Auth DNS   │  │ Recursor   │  │ Load Balancer│  │   │
+│  │  │ :53        │  │ :53/:5353  │  │ Health Mon   │  │   │
+│  │  └────────────┘  └────────────┘  └──────────────┘  │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │   │
+│  │  │ DHCPv4 :67 │  │ DHCPv6     │  │ SLAAC RA     │  │   │
+│  │  │            │  │ :547       │  │              │  │   │
+│  │  └────────────┘  └────────────┘  └──────────────┘  │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │   │
+│  │  │ REST API   │  │ gRPC API   │  │ Dashboard+WS │  │   │
+│  │  │ :8080      │  │ :50051     │  │ :80          │  │   │
+│  │  └────────────┘  └────────────┘  └──────────────┘  │   │
+│  │  ┌─────────────────────────────────────────────┐   │   │
+│  │  │           redb (embedded database)           │   │   │
+│  │  └─────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────┐  ┌────────────────────────┐  │   │
+│  │  │ Federation Agent │  │ Message Bus (NATS/NoOp)│  │   │
+│  │  └──────────────────┘  └────────────────────────┘  │   │
+│  └────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────┘
 ```
+
+### Container Runtime
+
+MicroDNS runs inside a **stormdbase** container image instead of bare scratch. [stormd](https://github.com/glennswest/stormd) provides:
+
+- **Process supervision** — automatic restart on crash with configurable thresholds
+- **Liveness probes** — TCP port 53 health check, restarts microdns if DNS stops responding
+- **SSH access** — built-in SSH server for debugging running containers
+- **Web dashboard** — process status, memory charts, restart history on port 9080
+- **Structured logging** — stdout/stderr capture with severity detection
+- **Busybox commands** — 63 built-in Unix commands (ls, cat, grep, curl, dig, etc.)
 
 ### Multi-Instance Topology
 
@@ -43,12 +58,23 @@ Designed for an instance-per-network federated topology where each subnet runs i
     ▼             ▼             ▼
 ┌─────────┐ ┌─────────┐ ┌─────────┐
 │ g10     │ │ g11     │ │ gt      │
-│ .10.199 │ │ .11.199 │ │ .200.199│
+│ .10.252 │ │ .11.252 │ │ .200.199│
 └─────────┘ └─────────┘ └─────────┘
   bridge       bridge-boot  bridge-gt
 ```
 
 Each instance is authoritative for its own subnet zones. Cross-subnet queries are forwarded peer-to-peer. If a peer goes down, the forwarding instance falls back to a local copy of the zone data (served as non-authoritative).
+
+### Current Deployment
+
+| Instance | Network | IP | Zone | DHCP |
+|----------|---------|-----|------|------|
+| main | gw | 192.168.1.199 | gw.lo | no |
+| g10 | data | 192.168.10.252 | g10.lo | yes |
+| g11 | ipmi | 192.168.11.252 | g11.lo | yes |
+| gt | mgmt | 192.168.200.199 | gt.lo | no |
+
+All instances are managed by **mkube** which auto-deploys from the container registry.
 
 ## Features
 
@@ -56,18 +82,25 @@ Each instance is authoritative for its own subnet zones. Cross-subnet queries ar
 - **Recursive DNS** — Cache, forward zones, upstream forwarding (UDP + TCP)
 - **Forward-with-Fallback** — Forward to peer instances; serve local copy if peer is down (AA=0)
 - **DNS Load Balancing** — Health-checked records with ping/HTTP/HTTPS/TCP probes
-- **DHCPv4** — DORA flow, pools, static reservations, PXE boot (next-server/boot-file)
+- **Correct NOERROR/NXDOMAIN** — Returns NOERROR with empty answer when name exists but queried type has no records (required for systemd-resolved parallel A+AAAA lookups)
+- **DHCPv4** — DORA flow, pools, static reservations, PXE/iPXE boot support
+- **DHCP Extended Options** — NTP (42), MTU (26), domain search (119), classless static routes (121), log server (7), time offset (2), WPAD (252)
+- **DHCP Option 15/119 Handling** — Option 15 suppressed when domain search (119) is configured to prevent systemd-resolved DNS scoping
+- **DHCP Reservation Inheritance** — Reservations inherit all extended options from pool when not explicitly overridden
 - **DHCPv6** — Stateful address assignment, prefix delegation
 - **SLAAC** — Router Advertisement daemon
-- **DNS Auto-Registration** — DHCP leases automatically create A/AAAA + PTR records
+- **DNS Auto-Registration** — DHCP leases automatically create A/AAAA + PTR records with deduplication
 - **IPAM** — IP address management for container workloads
+- **Database-Driven Config** — All pools, reservations, forwarders stored in redb, managed via REST API
+- **TOML Bootstrap Migration** — One-time import from TOML config on first boot
 - **Peer Connectivity Testing** — Built-in endpoint to probe DNS/HTTP to all peers
-- **Federation** — Leaf/coordinator agents with heartbeat and config sync via Kafka
-- **Dashboard** — Embedded HTML + WebSocket real-time dashboard
+- **Federation** — Leaf/coordinator agents with heartbeat and config sync via NATS
+- **Dashboard** — 7-tab SPA (Overview, DNS, LB, DHCP, Events, Logs, Peers)
+- **SSE Watch** — `GET /api/v1/watch?types=dhcp,dns,zones,records,leases` for real-time event streams
 - **gRPC API** — Zone, Record, Lease, Cluster, and Health services
-- **REST API** — Full CRUD for zones, records, leases, IPAM, connectivity
+- **REST API** — Full CRUD for zones, records, pools, reservations, forwarders, leases, IPAM
 - **Embedded Database** — redb with ACID transactions, no external dependencies
-- **Static Binary** — Single musl-linked binary, runs from scratch container
+- **Static Binary** — Single musl-linked binary, runs in stormdbase container
 
 ## Build
 
@@ -75,7 +108,8 @@ Each instance is authoritative for its own subnet zones. Cross-subnet queries ar
 
 - Rust 1.88+ (edition2024 support required)
 - `protobuf-compiler` (for gRPC codegen)
-- Docker (for container builds)
+- `podman` (for container builds)
+- ARM64 cross-compile toolchain (`aarch64-linux-musl-gcc`)
 
 ### Local Build
 
@@ -83,25 +117,20 @@ Each instance is authoritative for its own subnet zones. Cross-subnet queries ar
 cargo build --release
 ```
 
-### Docker Build (ARM64)
+### Cross-Compile + Container Build + Deploy
 
 ```bash
-# Native ARM64 on Apple Silicon — no cross-compile needed
-docker build -t microdns:arm64 .
+# One-step: cross-compile ARM64, build container image, push to registry
+# mkube auto-deploys within ~2 minutes
+scripts/build-and-push.sh          # push as :edge (default)
+scripts/build-and-push.sh latest   # push as :latest
 ```
 
-The Dockerfile uses a multi-stage build: `rust:1.88-bookworm` builder with musl target producing a static binary, copied into a `scratch` runtime image.
-
-### Build for RouterOS
-
-```bash
-# Build container image and save as tarball
-scripts/build-container.sh
-
-# Or manually:
-docker build -t microdns:arm64 .
-docker save microdns:arm64 -o microdns-arm64.tar
-```
+The script:
+1. Cross-compiles for `aarch64-unknown-linux-musl`
+2. Builds a container image using `stormdbase` as base (via `Dockerfile.scratch`)
+3. Pushes to `registry.gt.lo:5000/microdns:edge`
+4. mkube watches the registry and auto-deploys new images
 
 ### Run Tests
 
@@ -115,6 +144,12 @@ cargo test --workspace
 microdns --config /etc/microdns/microdns.toml
 ```
 
+Or with CLI bootstrap flags:
+
+```bash
+microdns --listen-dns 0.0.0.0:53 --data-dir /data --mode standalone
+```
+
 ### Ports
 
 | Port | Protocol | Service |
@@ -123,12 +158,30 @@ microdns --config /etc/microdns/microdns.toml
 | 5353 | UDP/TCP | DNS (recursor, when auth uses 53) |
 | 67 | UDP | DHCPv4 |
 | 547 | UDP | DHCPv6 |
-| 80 | TCP | REST API + Dashboard |
+| 80 | TCP | Dashboard + WebSocket |
+| 8080 | TCP | REST API |
 | 50051 | TCP | gRPC API |
+| 9080 | TCP | stormd web dashboard |
+| 22 | TCP | stormd SSH |
 
 ## Configuration
 
-TOML format with extensive serde defaults. Minimal config:
+### Database-Driven Config
+
+All runtime configuration is stored in the redb database and managed via REST API:
+
+- **DHCP pools** — `POST/GET/PATCH/DELETE /api/v1/dhcp/pools`
+- **DHCP reservations** — `POST/GET/PATCH/DELETE /api/v1/dhcp/reservations`
+- **DNS forwarders** — `POST/GET/DELETE /api/v1/dns/forwarders`
+- **Instance config** — `GET/PATCH /api/v1/dhcp/config`
+
+Changes take effect immediately — redb is memory-mapped, no reload needed.
+
+### TOML Bootstrap
+
+TOML config is used for initial bootstrap only. On first boot, pools/reservations/forwarders are migrated from TOML to the database. After that, TOML is only needed for listen addresses and instance identity.
+
+Minimal config:
 
 ```toml
 [instance]
@@ -157,7 +210,7 @@ mode = "standalone"
 # Peer instances for connectivity testing
 [[instance.peers]]
 id = "microdns-g10"
-addr = "192.168.10.199"
+addr = "192.168.10.252"
 dns_port = 53            # default: 53
 http_port = 8080         # default: 8080
 
@@ -180,8 +233,8 @@ listen = "0.0.0.0:53"   # or :5353 if auth uses :53
 cache_size = 10000
 
 [dns.recursor.forward_zones]
-"g10.lo" = ["192.168.10.199:53"]
-"g11.lo" = ["192.168.11.199:53"]
+"g10.lo" = ["192.168.10.252:53"]
+"g11.lo" = ["192.168.11.252:53"]
 
 [dns.loadbalancer]
 enabled = true
@@ -193,17 +246,25 @@ default_probe = "ping"   # ping | http | https | tcp
 [dhcp.v4]
 enabled = true
 interface = "eth0"
+mode = "normal"          # normal | gateway (relay-only with veth)
 
 [[dhcp.v4.pools]]
 range_start = "192.168.1.100"
 range_end = "192.168.1.200"
 subnet = "192.168.1.0/24"
 gateway = "192.168.1.1"
-dns = ["192.168.1.199"]
+dns_servers = ["192.168.1.199"]
 domain = "gw.lo"
+domain_search = ["gw.lo", "g10.lo", "g11.lo", "gt.lo"]
 lease_time_secs = 3600
-next_server = "192.168.1.5"   # PXE boot
-boot_file = "pxelinux.0"
+next_server = "192.168.1.5"       # PXE TFTP server
+boot_file = "pxelinux.0"          # PXE BIOS boot file
+boot_file_efi = "ipxe.efi"        # PXE UEFI boot file
+ntp_servers = ["192.168.1.1"]     # option 42
+mtu = 1500                        # option 26
+log_server = "192.168.1.5"        # option 7
+time_offset = -18000              # option 2
+wpad_url = "http://wpad/wpad.dat" # option 252
 
 [[dhcp.v4.reservations]]
 mac = "AA:BB:CC:DD:EE:FF"
@@ -237,8 +298,8 @@ default_ttl = 300
 # --- Messaging ---
 
 [messaging]
-backend = "noop"          # noop | kafka
-brokers = ["kafka:9092"]
+backend = "noop"          # noop | nats
+nats_url = "nats://localhost:4222"
 topic_prefix = "microdns"
 
 # --- IPAM ---
@@ -274,6 +335,38 @@ path = "/data/microdns.redb"
 [logging]
 level = "info"
 format = "json"
+```
+
+### stormd Config
+
+The stormd process supervisor is configured via `config/stormd.toml`:
+
+```toml
+[general]
+name = "microdns"
+
+[api]
+bind = "0.0.0.0:9080"
+
+[ssh]
+enabled = true
+bind = "0.0.0.0:22"
+password = "stormd"
+
+[[process]]
+name = "microdns"
+command = "/microdns"
+args = ["--config", "/etc/microdns/microdns.toml"]
+on_failure = "restart"
+on_exit = "restart"
+restart_delay_secs = 2
+
+[process.liveness]
+type = "tcp"
+port = 53
+interval_secs = 10
+failure_threshold = 3
+initial_delay_secs = 5
 ```
 
 ## REST API
@@ -342,6 +435,37 @@ Create record with health check:
 }
 ```
 
+### DHCP Pools
+
+```
+GET    /api/v1/dhcp/pools                     List pools
+POST   /api/v1/dhcp/pools                     Create pool
+GET    /api/v1/dhcp/pools/{id}                Get pool
+PATCH  /api/v1/dhcp/pools/{id}                Update pool
+DELETE /api/v1/dhcp/pools/{id}                Delete pool
+GET    /api/v1/dhcp/pools/{id}/routes         List static routes
+POST   /api/v1/dhcp/pools/{id}/routes         Add static route
+DELETE /api/v1/dhcp/pools/{id}/routes/{rid}   Delete static route
+```
+
+### DHCP Reservations
+
+```
+GET    /api/v1/dhcp/reservations              List reservations
+POST   /api/v1/dhcp/reservations              Create reservation
+GET    /api/v1/dhcp/reservations/{id}         Get reservation
+PATCH  /api/v1/dhcp/reservations/{id}         Update reservation
+DELETE /api/v1/dhcp/reservations/{id}         Delete reservation
+```
+
+### DNS Forwarders
+
+```
+GET    /api/v1/dns/forwarders                 List forward zones
+POST   /api/v1/dns/forwarders                 Create forward zone
+DELETE /api/v1/dns/forwarders/{zone}          Delete forward zone
+```
+
 ### Leases
 
 ```
@@ -359,32 +483,24 @@ Response:
 {"status": "ok", "version": "0.1.0", "zones": 12}
 ```
 
+### Watch (SSE)
+
+```
+GET    /api/v1/watch?types=dhcp,dns,zones,records,leases
+```
+
+Real-time event stream via Server-Sent Events. Filter by event type.
+
 ### Connectivity
 
 ```
 GET    /api/v1/connectivity                   Probe all peer instances
 ```
 
-Response:
-```json
-{
-  "instance_id": "microdns-main",
-  "peers": [
-    {
-      "id": "microdns-g10",
-      "addr": "192.168.10.199",
-      "dns_udp": {"ok": true, "latency_ms": 21.5, "error": null},
-      "dns_tcp": {"ok": true, "latency_ms": 23.1, "error": null},
-      "http":    {"ok": true, "latency_ms": 0.8, "error": null}
-    }
-  ]
-}
-```
-
-### Cluster
+### DHCP Status
 
 ```
-GET    /api/v1/cluster/status                 Federation cluster status
+GET    /api/v1/dhcp/status                    Pool utilization and config
 ```
 
 ### IPAM
@@ -396,15 +512,13 @@ POST   /api/v1/ipam/allocate                  Allocate IP
 DELETE /api/v1/ipam/allocations/{id}          Release IP
 ```
 
-Allocate:
-```json
-{"pool": "containers", "container": "my-app"}
+### Logs
+
+```
+GET    /api/v1/logs?limit=100&level=info&module=dhcp
 ```
 
-Response:
-```json
-{"id": "...", "ip": "192.168.200.15", "pool": "containers", "gateway": "192.168.200.1", "bridge": "bridge-gt", "subnet": "192.168.200.0/24", "container": "my-app"}
-```
+In-memory ring buffer (1000 entries) with level/module filtering.
 
 ## gRPC API
 
@@ -450,35 +564,10 @@ Unhealthy records are automatically excluded from DNS responses. The state machi
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/build-container.sh` | Build ARM64 binary + RouterOS tarball |
-| `scripts/setup-rose1.sh` | Deploy/manage containers on MikroTik RouterOS |
+| `scripts/build-and-push.sh` | Cross-compile ARM64, build stormdbase container, push to registry |
 | `scripts/import-zones.sh` | Import zones from PowerDNS |
 | `scripts/clone-dhcp-reservations.sh` | Clone DHCP reservations from MikroTik routers |
-
-### Deploy to RouterOS
-
-```bash
-# Build
-scripts/build-container.sh
-
-# First-time deploy (creates bridges, mounts, veths, containers)
-scripts/setup-rose1.sh deploy
-
-# Start all instances
-scripts/setup-rose1.sh start
-
-# Update after code changes
-scripts/setup-rose1.sh redeploy
-```
-
-### Import Zones from PowerDNS
-
-```bash
-scripts/import-zones.sh \
-  --target http://192.168.1.199 \
-  --pdns-key "your-api-key" \
-  --zones "gw.lo,g10.lo,1.168.192.in-addr.arpa"
-```
+| `scripts/test-dhcp.sh` | DHCP testing utilities |
 
 ## Kubernetes Deployment
 
@@ -495,7 +584,7 @@ kubectl apply -f k8s/service.yaml
 
 - **Leaf instances** run as a DaemonSet with `hostNetwork: true` for DNS port binding
 - **Coordinator** runs as a single-replica Deployment
-- Federation uses Kafka for heartbeat and config sync between instances
+- Federation uses NATS for heartbeat and config sync between instances
 
 ## Security
 
@@ -535,7 +624,8 @@ MicroDNS includes defense-in-depth security hardening across all network-facing 
 
 ### Lease Management
 
-- **Automatic cleanup** — Background task purges expired DHCP leases every 5 minutes (24-hour retention after expiry) to prevent unbounded database growth.
+- **Automatic cleanup** — Background task purges expired DHCP leases (4x lease time retention). Periodic sync rebuilds in-memory state every 60s.
+- **Orphaned lease cleanup** — Scans for lease entries not referenced by MAC index and removes them.
 
 ### DNS Protocol Safety
 
@@ -552,25 +642,10 @@ crates/
   microdns-recursor/   Recursive resolver with cache, forwarding, TCP
   microdns-lb/         Load balancer health monitor and probes
   microdns-dhcp/       DHCPv4, DHCPv6, SLAAC, DNS auto-registration
-  microdns-msg/        Message bus abstraction (Kafka, NoOp)
+  microdns-msg/        Message bus abstraction (NATS, NoOp)
   microdns-federation/ Leaf/coordinator agents, heartbeat, config sync
   microdns-api/        REST (axum) + gRPC (tonic) + dashboard + WebSocket
 ```
-
-## TODO
-
-### Database-Driven Config (eliminate TOML)
-
-Currently microdns requires a TOML config file to start, which makes deployment fragile — you must generate configs, SCP them to hosts, and restart containers to apply changes. The target architecture:
-
-- **Minimal bootstrap**: only CLI args or env vars for listen addresses and data dir path
-- **All config in redb**: DHCP pools, reservations, forward zones, upstream servers, instance peers — stored in the database, not TOML
-- **REST API for config**: `POST/PUT/DELETE /api/v1/config/dhcp/pools`, `/api/v1/config/forward-zones`, `/api/v1/config/upstream`, etc.
-- **PVC is the only state**: the redb file on a volume mount is everything. Replace the container image any time without losing config.
-- **Live reload**: config changes via API take effect immediately without restart
-- **Import from TOML**: one-time migration command to seed database from existing TOML configs
-
-This eliminates the need for ConfigMaps, SCP, and container restarts for config changes. Deploy the binary, point it at a PVC, configure via REST.
 
 ## License
 
