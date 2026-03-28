@@ -10,88 +10,57 @@ Containers on the gt network (192.168.200.0/24) get dynamically assigned IPs fro
 
 ## Proposed Solution
 
-mkube should support a static IP field in container specs. When `ip` is set, mkube must assign exactly that IP to the container's network interface — not a dynamic one from the pool.
+mkube should maintain a **DNS reservation table** — a mapping of container name to static IP. When a container starts, mkube looks up the container in this table and assigns the reserved IP. The table is managed by mkube internally (not in container YAML specs) to avoid collision issues from users hardcoding IPs in manifests.
 
-### Container Spec Change
+### How It Works
 
-Add an optional `ip` field to the container network configuration:
+1. mkube maintains an internal reservation table (persisted in its database)
+2. When a container is deployed, mkube checks if the container name has a reserved IP
+3. If yes → assign that exact IP, register it in DNS
+4. If no → assign from the dynamic pool as today, then auto-reserve that IP for next time
+5. Reserved IPs are excluded from the dynamic pool to prevent collisions
+6. The reservation table is the source of truth — no IP field in container YAML
 
-```yaml
-apiVersion: v1
-kind: Container
-metadata:
-  name: nats
-  namespace: nats
-spec:
-  network: gt
-  ip: 192.168.200.10    # <-- new field: static IP assignment
-  image: registry.gt.lo:5000/nats:latest
-  ...
+### API
+
+```
+GET  /api/v1/ipreservations                  — list all reservations
+POST /api/v1/ipreservations                  — create: {"name": "nats", "network": "gt", "ip": "192.168.200.2"}
+PUT  /api/v1/ipreservations/{name}           — update IP
+DELETE /api/v1/ipreservations/{name}         — release reservation
 ```
 
-When `ip` is present:
-- mkube MUST assign this exact IP to the container
-- If the IP is already in use by another container, the deployment MUST fail with a clear error (not silently assign a different IP)
-- The IP must be within the network's subnet range
-- mkube must track static IPs separately from the dynamic pool to avoid collisions
+## Static IP Allocations — gt Network (192.168.200.0/24)
 
-When `ip` is absent:
-- Current behavior (dynamic assignment from pool) is preserved
+All containers assigned sequentially. .1 is the router, .199 is DNS.
 
-### Recommended Static IP Allocations — gt Network
+| IP | Container | Notes |
+|----|-----------|-------|
+| .1 | rose1 | Router (not a container) |
+| .2 | mkube | Cluster manager |
+| .3 | registry | Container image registry |
+| .4 | registry-stormbase | Base image registry |
+| .5 | nats | Message bus |
+| .6 | minio | S3 object store |
+| .7 | miniminio | S3 object store (small) |
+| .8 | git (rust4git) | Git server |
+| .9 | console | Web console |
+| .10 | cloudid | Cloud identity service |
+| .11 | netwatch | Network monitor |
+| .12 | pvc-test | PVC testing |
+| .199 | microdns | DNS server (already pinned) |
 
-Based on current container inventory, the following static assignments are recommended. IPs are grouped by function with room for growth.
+Dynamic pool: .100–.198 for containers without reservations.
 
-#### Infrastructure (192.168.200.1–9)
+## Scope
 
-| IP | Container | Namespace | Notes |
-|----|-----------|-----------|-------|
-| .1 | rose1 | — | Router (not a container) |
-| .2 | mkube | mkube | Cluster manager |
-| .3 | registry | registry | Container image registry |
-| .4 | *(reserved)* | — | Future infra |
-| .5 | *(reserved)* | — | Future infra |
-| .6 | registry-stormbase | registry-stormbase | Base image registry |
+This spec covers the gt network, but the mechanism should work for any mkube-managed network. The g10 and g11 networks use microdns DHCP reservations for stable IPs and don't need this.
 
-#### Core Services (192.168.200.10–19)
+## Implementation Notes
 
-| IP | Container | Namespace | Notes |
-|----|-----------|-----------|-------|
-| .10 | nats | nats | Message bus |
-| .11 | miniminio | miniminio | S3-compatible object store |
-| .12 | git | git | Git server (rust4git) |
-| .13 | minio | minio | S3-compatible object store |
-| .14 | console | console | Web console |
-
-#### Applications (192.168.200.20–49)
-
-| IP | Container | Namespace | Notes |
-|----|-----------|-----------|-------|
-| .20 | cloudid | cloudid | Cloud identity service |
-| .21 | netwatch | netwatch | Network monitor |
-| .22 | pvc-test | pvc-test | PVC testing |
-
-#### DNS (192.168.200.199)
-
-| IP | Container | Namespace | Notes |
-|----|-----------|-----------|-------|
-| .199 | microdns | dns | DNS server (static, already pinned) |
-
-#### Dynamic Pool (192.168.200.100–198)
-
-IPs .100–.198 remain available for containers without static assignments.
-
-### Scope
-
-This spec covers the gt network only, but the same mechanism should work for any mkube-managed network. The g10 and g11 networks use microdns DHCP for IP assignment and don't need this — their containers already get stable IPs via DHCP reservations.
-
-### Implementation Notes
-
-- mkube's IP allocator needs a "reserved" set that is excluded from dynamic assignment
-- On container start, if `ip` is specified, skip the allocator and use the static IP directly
-- Persist static IP mappings so they survive mkube restarts
-- The static IP field should be validated at deploy time (within subnet, not a broadcast/network address, not the gateway)
-
-### Migration
-
-For existing containers, update their specs one at a time to add the `ip` field matching their current assignment. On next restart they'll get the pinned IP instead of a random one.
+- The reservation table should be persisted (survives mkube restarts)
+- On container start: lookup reservation → assign IP → register DNS
+- On container stop: keep the reservation (IP stays reserved even when container is down)
+- New containers without a reservation auto-get one after first dynamic assignment
+- Reserved IPs must be excluded from the dynamic allocator to prevent collisions
+- Provide a CLI or API to view/manage reservations
