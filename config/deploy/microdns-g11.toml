@@ -8,7 +8,7 @@ mode = "standalone"
 
 [[instance.peers]]
 id = "microdns-main"
-addr = "192.168.1.52"
+addr = "192.168.1.252"
 
 [[instance.peers]]
 id = "microdns-g10"
@@ -25,11 +25,11 @@ cache_size = 10000
 
 [dns.recursor.forward_zones]
 # gw network
-"gw.lo" = ["192.168.1.52:53"]
-"pv.lo" = ["192.168.1.52:53"]
-"bm.lo" = ["192.168.1.52:53"]
-"ipmi.lo" = ["192.168.1.52:53"]
-"1.168.192.in-addr.arpa" = ["192.168.1.52:53"]
+"gw.lo" = ["192.168.1.252:53"]
+"pv.lo" = ["192.168.1.252:53"]
+"bm.lo" = ["192.168.1.252:53"]
+"ipmi.lo" = ["192.168.1.252:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.252:53"]
 # g10 network
 "g10.lo" = ["192.168.10.252:53"]
 "10.168.192.in-addr.arpa" = ["192.168.10.252:53"]

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-03-29
+- **feat:** New gw network microdns instance at 192.168.1.252 — replaces .52, aligns with .252 convention used by g10/g11/g8/g9
+- **feat:** Added `domain_search` (option 119) to gw DHCP pool for cross-network hostname resolution
+- **fix:** Removed stale cap03 reservation at .252 (belongs on g9 network)
+- **fix:** Updated all peer configs (g10, g11, gt) to forward gw.lo to 192.168.1.252 instead of .52
+
 ### 2026-03-20
 - **fix:** Add comprehensive DNS forwarding across all networks — each instance now forwards to all other networks (g8, g9, g10, g11, gt, gw) including reverse zones (in-addr.arpa) and utility zones (pv.lo, bm.lo, ipmi.lo)
 - **fix:** Corrected stale DNS forwarder IPs in gt config (192.168.10.199 → 192.168.10.252, 192.168.11.199 → 192.168.11.252)

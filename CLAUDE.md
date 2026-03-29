@@ -38,7 +38,7 @@ podman push --tls-verify=false registry.gt.lo:5000/microdns:edge
 
 | Instance | Network | IP | Zone | DHCP |
 |----------|---------|-----|------|------|
-| main | gw | 192.168.1.199 | gw.lo | no |
+| main | gw | 192.168.1.252 | gw.lo | yes |
 | g10 | data | 192.168.10.252 | g10.lo | yes |
 | g11 | ipmi | 192.168.11.252 | g11.lo | yes |
 | gt | mgmt | 192.168.200.199 | gt.lo | no |
@@ -67,7 +67,7 @@ docs/                       Additional documentation
 
 | Network | DNS IP | Base URL |
 |---------|--------|----------|
-| gw | 192.168.1.199 | `http://192.168.1.199:8080/api/v1` |
+| gw | 192.168.1.252 | `http://192.168.1.252:8080/api/v1` |
 | g10 | 192.168.10.252 | `http://192.168.10.252:8080/api/v1` |
 | g11 | 192.168.11.252 | `http://192.168.11.252:8080/api/v1` |
 | gt | 192.168.200.199 | `http://192.168.200.199:8080/api/v1` |
