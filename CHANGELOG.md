@@ -8,6 +8,7 @@
 - **fix:** Removed stale cap03 reservation at .252 (belongs on g9 network)
 - **fix:** Updated all peer configs (g10, g11, gt) to forward gw.lo to 192.168.1.252 instead of .52
 - **chore:** Removed pv.lo, bm.lo, ipmi.lo zones — deleted from forward zones and domain_search across all configs
+- **feat:** Bootstrap script for gw252 — transfers zones from .52, creates reverse zone, pre-populates A+PTR for all 47 DHCP reservations, cleans up junk DNS records (phones, cameras, cars, auto-DHCP names, duplicates)
 
 ### 2026-03-20
 - **fix:** Add comprehensive DNS forwarding across all networks — each instance now forwards to all other networks (g8, g9, g10, g11, gt, gw) including reverse zones (in-addr.arpa) and utility zones (pv.lo, bm.lo, ipmi.lo)
