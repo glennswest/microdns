@@ -1,5 +1,5 @@
 # MicroDNS - mdns.gw.lo (192.168.1.52)
-# Authoritative DNS for gw.lo and utility zones
+# Authoritative DNS for gw.lo
 # DHCP for 192.168.1.0/24
 # Forwards g10/g11/gt queries to their respective mdns instances
 

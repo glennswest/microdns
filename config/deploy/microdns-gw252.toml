@@ -1,5 +1,5 @@
 # MicroDNS - mdns.gw.lo (192.168.1.252)
-# Authoritative DNS for gw.lo and utility zones
+# Authoritative DNS for gw.lo
 # DHCP for 192.168.1.0/24
 # Forwards g10/g11/gt/g8/g9 queries to their respective mdns instances
 
@@ -55,7 +55,7 @@ subnet = "192.168.1.0/24"
 gateway = "192.168.1.1"
 dns = ["192.168.1.252"]
 domain = "gw.lo"
-domain_search = ["gw.lo", "gt.lo", "g10.lo", "g11.lo", "g8.lo", "g9.lo", "pv.lo", "bm.lo", "ipmi.lo"]
+domain_search = ["gw.lo", "gt.lo", "g10.lo", "g11.lo", "g8.lo", "g9.lo"]
 lease_time_secs = 600
 next_server = "192.168.1.5"
 boot_file = "http://192.168.1.5/pxelinux.0"
