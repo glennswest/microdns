@@ -853,7 +853,8 @@ impl Dhcpv4Server {
         let effective_root_path = db_res
             .as_ref()
             .and_then(|r| r.root_path.clone())
-            .or_else(|| pool_pxe.as_ref().and_then(|p| p.root_path.clone()));
+            .or_else(|| pool_pxe.as_ref().and_then(|p| p.root_path.clone()))
+            .filter(|rp| !rp.is_empty()); // empty string = suppress pool default
 
         // Option 17 (root-path) — always send when set, independent of PXE
         // boot chain config. Used by iPXE for direct sanboot from iSCSI target.
