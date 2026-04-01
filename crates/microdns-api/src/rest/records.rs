@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
+use microdns_core::reverse;
 use microdns_core::types::{HealthCheck, Record, RecordData};
 use microdns_msg::events::{ChangeAction, Event};
 use serde::{Deserialize, Serialize};
@@ -109,8 +110,8 @@ async fn create_record(
     Path(zone_id): Path<Uuid>,
     Json(req): Json<CreateRecordRequest>,
 ) -> Result<(StatusCode, Json<RecordResponse>), (StatusCode, String)> {
-    // Verify zone exists
-    state
+    // Verify zone exists and get zone name for reverse sync
+    let zone = state
         .db
         .get_zone(&zone_id)
         .map_err(internal_error)?
@@ -149,6 +150,17 @@ async fn create_record(
 
     // Increment SOA serial
     let _ = state.db.increment_soa_serial(&zone_id);
+
+    // Auto-sync reverse PTR for A/AAAA records
+    if let Err(e) = reverse::sync_reverse_record(
+        &state.db,
+        &record.name,
+        &zone.name,
+        &record.data,
+        record.ttl,
+    ) {
+        tracing::warn!("reverse zone sync failed for {}: {e}", record.name);
+    }
 
     // Invalidate recursor cache so new records are served immediately
     if let Some(ref cache) = state.recursor_cache {
@@ -202,6 +214,10 @@ async fn update_record(
         .map_err(internal_error)?
         .ok_or((StatusCode::NOT_FOUND, "record not found".to_string()))?;
 
+    // Capture old values for reverse zone cleanup
+    let old_name = record.name.clone();
+    let old_data = record.data.clone();
+
     if let Some(ref name) = req.name {
         validate_dns_name(name).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
         record.name = name.clone();
@@ -226,6 +242,31 @@ async fn update_record(
         .map_err(internal_error)?;
 
     let _ = state.db.increment_soa_serial(&zone_id);
+
+    // Update reverse PTR if name or data changed
+    if old_name != record.name || old_data != record.data {
+        if let Ok(Some(zone)) = state.db.get_zone(&zone_id) {
+            // Delete old PTR
+            if let Err(e) = reverse::delete_reverse_record(
+                &state.db,
+                &old_name,
+                &zone.name,
+                &old_data,
+            ) {
+                tracing::warn!("reverse zone cleanup failed for old {old_name}: {e}");
+            }
+            // Create new PTR
+            if let Err(e) = reverse::sync_reverse_record(
+                &state.db,
+                &record.name,
+                &zone.name,
+                &record.data,
+                record.ttl,
+            ) {
+                tracing::warn!("reverse zone sync failed for {}: {e}", record.name);
+            }
+        }
+    }
 
     // Invalidate recursor cache so updated records are served immediately
     if let Some(ref cache) = state.recursor_cache {
@@ -268,6 +309,18 @@ async fn delete_record(
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     let _ = state.db.increment_soa_serial(&zone_id);
+
+    // Delete reverse PTR for A/AAAA records
+    if let Ok(Some(zone)) = state.db.get_zone(&zone_id) {
+        if let Err(e) = reverse::delete_reverse_record(
+            &state.db,
+            &record.name,
+            &zone.name,
+            &record.data,
+        ) {
+            tracing::warn!("reverse zone cleanup failed for {}: {e}", record.name);
+        }
+    }
 
     // Invalidate recursor cache so deleted records stop resolving immediately
     if let Some(ref cache) = state.recursor_cache {

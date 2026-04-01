@@ -1,6 +1,7 @@
 use chrono::Utc;
 use microdns_core::db::Db;
 use microdns_core::error::Result;
+use microdns_core::reverse;
 use microdns_core::types::{Record, RecordData, RecordType};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::{debug, warn};
@@ -10,8 +11,6 @@ use uuid::Uuid;
 pub struct DnsRegistrar {
     db: Db,
     forward_zone: String,
-    reverse_zone_v4: String,
-    _reverse_zone_v6: String,
     default_ttl: u32,
 }
 
@@ -19,15 +18,13 @@ impl DnsRegistrar {
     pub fn new(
         db: Db,
         forward_zone: &str,
-        reverse_zone_v4: &str,
-        reverse_zone_v6: &str,
+        _reverse_zone_v4: &str,
+        _reverse_zone_v6: &str,
         default_ttl: u32,
     ) -> Self {
         Self {
             db,
             forward_zone: forward_zone.to_string(),
-            reverse_zone_v4: reverse_zone_v4.to_string(),
-            _reverse_zone_v6: reverse_zone_v6.to_string(),
             default_ttl,
         }
     }
@@ -48,6 +45,7 @@ impl DnsRegistrar {
 
     /// Register forward (A) and reverse (PTR) records for a DHCPv4 lease.
     /// Deduplicates: skips if identical record exists, updates IP if hostname moved.
+    /// Auto-creates reverse zone if it doesn't exist.
     pub fn register_v4(&self, hostname: &str, ip: Ipv4Addr) -> Result<()> {
         let hostname = self.sanitize_hostname(hostname);
         let zone = match self.db.get_zone_by_name(&self.forward_zone)? {
@@ -93,34 +91,9 @@ impl DnsRegistrar {
         self.db.create_record(&a_record)?;
         debug!("registered A record: {hostname}.{} -> {ip}", self.forward_zone);
 
-        // Create PTR record in reverse zone (with dedup)
-        if let Some(rev_zone) = self.db.get_zone_by_name(&self.reverse_zone_v4)? {
-            let octets = ip.octets();
-            let ptr_name = octets[3].to_string();
-            let ptr_target = format!("{hostname}.{}.", self.forward_zone);
-            let ptr_data = RecordData::PTR(ptr_target.clone());
-
-            let existing_ptr = self.db.query_records(&rev_zone.id, &ptr_name, RecordType::PTR)?;
-            if !existing_ptr.iter().any(|r| r.data == ptr_data) {
-                // Remove ALL existing PTR records for this IP — one IP = one PTR
-                for rec in &existing_ptr {
-                    self.db.delete_record(&rec.id)?;
-                }
-
-                let ptr_record = Record {
-                    id: Uuid::new_v4(),
-                    zone_id: rev_zone.id,
-                    name: ptr_name.clone(),
-                    ttl: self.default_ttl,
-                    data: ptr_data,
-                    enabled: true,
-                    health_check: None,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
-                };
-                self.db.create_record(&ptr_record)?;
-                debug!("registered PTR record: {ptr_name}.{} -> {ptr_target}", self.reverse_zone_v4);
-            }
+        // Auto-sync reverse PTR (creates reverse zone if needed)
+        if let Err(e) = reverse::sync_ptr_for_a(&self.db, hostname, &self.forward_zone, ip, self.default_ttl) {
+            warn!("reverse PTR sync failed for {hostname} -> {ip}: {e}");
         }
 
         self.db.increment_soa_serial(&zone.id)?;
@@ -128,6 +101,7 @@ impl DnsRegistrar {
     }
 
     /// Register forward (AAAA) and reverse (PTR) records for a DHCPv6 lease.
+    /// Auto-creates reverse zone if it doesn't exist.
     pub fn register_v6(&self, hostname: &str, ip: Ipv6Addr) -> Result<()> {
         let hostname = self.sanitize_hostname(hostname);
         let zone = match self.db.get_zone_by_name(&self.forward_zone)? {
@@ -170,6 +144,11 @@ impl DnsRegistrar {
             self.forward_zone
         );
 
+        // Auto-sync reverse PTR (creates reverse zone if needed)
+        if let Err(e) = reverse::sync_ptr_for_aaaa(&self.db, hostname, &self.forward_zone, ip, self.default_ttl) {
+            warn!("reverse PTR sync failed for {hostname} -> {ip}: {e}");
+        }
+
         self.db.increment_soa_serial(&zone.id)?;
         Ok(())
     }
@@ -182,10 +161,19 @@ impl DnsRegistrar {
             None => return Ok(()),
         };
 
-        // Find and remove A/AAAA records for this hostname
+        // Find and remove A/AAAA records for this hostname, cleaning up reverse PTRs
         let records = self.db.list_records(&zone.id)?;
         for record in &records {
             if record.name == hostname {
+                // Clean up reverse PTR before deleting forward record
+                if let Err(e) = reverse::delete_reverse_record(
+                    &self.db,
+                    &record.name,
+                    &self.forward_zone,
+                    &record.data,
+                ) {
+                    warn!("reverse PTR cleanup failed for {hostname}: {e}");
+                }
                 self.db.delete_record(&record.id)?;
                 debug!("unregistered DNS record: {hostname}.{}", self.forward_zone);
             }

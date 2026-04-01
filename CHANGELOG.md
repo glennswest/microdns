@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-03-28
+- **feat:** Automatic reverse zone generation and PTR sync — A/AAAA records created, updated, or deleted via REST API now auto-create reverse zones (in-addr.arpa / ip6.arpa) and maintain corresponding PTR records
+- **feat:** DHCP DNS registrar auto-creates reverse zones instead of silently skipping when reverse zone doesn't exist
+- **refactor:** New `microdns_core::reverse` module with reusable reverse DNS utilities (zone name computation, PTR sync/delete, ensure_reverse_zone)
+
 ### 2026-03-29
 - **feat:** New gw network microdns instance at 192.168.1.252 — replaces .52, aligns with .252 convention used by g10/g11/g8/g9
 - **feat:** Added `domain_search` (option 119) to gw DHCP pool for cross-network hostname resolution
