@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-04-01
+- **fix:** Add DHCP debug logging for root_path/iPXE diagnostics — logs reservation lookup, root_path chain (reservation → pool → effective), iPXE detection, and boot file selection per MAC
+
 ### 2026-03-28
 - **feat:** Automatic reverse zone generation and PTR sync — A/AAAA records created, updated, or deleted via REST API now auto-create reverse zones (in-addr.arpa / ip6.arpa) and maintain corresponding PTR records
 - **feat:** DHCP DNS registrar auto-creates reverse zones instead of silently skipping when reverse zone doesn't exist

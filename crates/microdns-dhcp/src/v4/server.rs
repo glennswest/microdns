@@ -856,6 +856,12 @@ impl Dhcpv4Server {
             .or_else(|| pool_pxe.as_ref().and_then(|p| p.root_path.clone()))
             .filter(|rp| !rp.is_empty()); // empty string = suppress pool default
 
+        info!("DHCP DEBUG {}: db_res={} res_root={:?} pool_root={:?} effective_root={:?}",
+              mac, db_res.is_some(),
+              db_res.as_ref().and_then(|r| r.root_path.clone()),
+              pool_pxe.as_ref().and_then(|p| p.root_path.clone()),
+              effective_root_path);
+
         // Option 17 (root-path) — always send when set, independent of PXE
         // boot chain config. Used by iPXE for direct sanboot from iSCSI target.
         // Standard DHCP option, safe for all clients (non-iPXE clients ignore it).
@@ -887,6 +893,9 @@ impl Dhcpv4Server {
                     info!("no client arch option (93) in request");
                     false
                 });
+
+            info!("DHCP DEBUG {}: is_ipxe={} ipxe_url={:?} boot_file={} effective_root={:?}",
+                  mac, is_ipxe, effective_ipxe_url, bf, effective_root_path);
 
             let boot_file = if is_ipxe {
                 if effective_root_path.is_some() {
