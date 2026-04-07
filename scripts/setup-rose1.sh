@@ -18,7 +18,7 @@ SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 # Instance definitions: name ip/cidr gateway bridge mountprefix
 # mountprefix maps to existing RouterOS mount list names (mdns.{domain})
 INSTANCES=(
-    "microdns-main 192.168.1.199/24 192.168.1.88 bridge-lan mdns.gw.lo"
+    "microdns-main 192.168.1.252/24 192.168.1.88 bridge-lan mdns.gw.lo"
     "microdns-g10 192.168.10.199/24 192.168.10.1 bridge mdns.g10.lo"
     "microdns-g11 192.168.11.199/24 192.168.11.1 bridge-boot mdns.g11.lo"
     "microdns-gt 192.168.200.199/24 192.168.200.1 bridge-gt mdns.gt.lo"

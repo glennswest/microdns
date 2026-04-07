@@ -1,4 +1,4 @@
-# MicroDNS - mdns.gw.lo (192.168.1.52)
+# MicroDNS - mdns.gw.lo (192.168.1.252)
 # Authoritative DNS for gw.lo
 # DHCP for 192.168.1.0/24
 # Forwards g10/g11/gt queries to their respective mdns instances
@@ -29,19 +29,19 @@ cache_size = 50000
 "g9.lo" = ["192.168.9.252:53"]
 "9.168.192.in-addr.arpa" = ["192.168.9.252:53"]
 # local reverse
-"1.168.192.in-addr.arpa" = ["192.168.1.52:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.252:53"]
 
 [dhcp.v4]
 enabled = true
 interface = "eth0"
-server_ip = "192.168.1.52"
+server_ip = "192.168.1.252"
 
 [[dhcp.v4.pools]]
 range_start = "192.168.1.2"
 range_end = "192.168.1.149"
 subnet = "192.168.1.0/24"
 gateway = "192.168.1.1"
-dns = ["192.168.1.52"]
+dns = ["192.168.1.252"]
 domain = "gw.lo"
 lease_time_secs = 600
 next_server = "192.168.1.5"

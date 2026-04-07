@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Sync all DNS records to mdns.gw.lo (192.168.1.52) from PowerDNS + MikroTik."""
+"""Sync all DNS records to mdns.gw.lo (192.168.1.252) from PowerDNS + MikroTik."""
 
 import json
 import sys
 import urllib.request
 import urllib.error
 
-MDNS = "http://192.168.1.52:8080/api/v1"
+MDNS = "http://192.168.1.252:8080/api/v1"
 PDNS = "http://192.168.1.51:8081/api/v1/servers/localhost"
 PDNS_KEY = "quest.5124"
 
@@ -219,17 +219,17 @@ if pdns_gw:
 
     print(f"    Got {len(target_gw_records)} records from PowerDNS gw.lo")
 
-# -- Fix dns.gw.lo → 192.168.1.52 --
-add_record("dns", "A", "192.168.1.52", 300)
+# -- Fix dns.gw.lo → 192.168.1.252 --
+add_record("dns", "A", "192.168.1.252", 300)
 # Remove old dns.gw.lo pointing to .154
 target_gw_records.pop(("dns", "A", "192.168.1.154"), None)
 
 # -- Add mdns.gw.lo --
-add_record("mdns", "A", "192.168.1.52", 300)
+add_record("mdns", "A", "192.168.1.252", 300)
 
-# -- Fix homekit.gw.lo -- old PowerDNS had it at .52, no longer valid --
-# (was probably an old container, .52 is now mdns)
-target_gw_records.pop(("homekit", "A", "192.168.1.52"), None)
+# -- Fix homekit.gw.lo -- old PowerDNS had it at .252, no longer valid --
+# (was probably an old container, .252 is now mdns)
+target_gw_records.pop(("homekit", "A", "192.168.1.252"), None)
 
 # -- Remove buggy bootstrap.gw.lo.gw.lo --
 target_gw_records.pop(("bootstrap.gw.lo", "A", "192.168.1.200"), None)
@@ -353,9 +353,9 @@ print(f"\n  Added: {added}, Skipped (existing/dup): {skipped}")
 old_dns_key = ("dns", "A", "192.168.1.154")
 if old_dns_key in existing_by_key:
     rid = existing_by_key[old_dns_key]
-    print(f"  Updating dns.gw.lo from .154 to .52 (record {rid[:8]}...)")
+    print(f"  Updating dns.gw.lo from .154 to .252 (record {rid[:8]}...)")
     mdns_put(f"/zones/{gw_zone_id}/records/{rid}", {
-        "data": {"type": "A", "data": "192.168.1.52"},
+        "data": {"type": "A", "data": "192.168.1.252"},
         "ttl": 300,
     })
 

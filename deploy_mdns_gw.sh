@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-TARGET_HOST="192.168.1.52"
+TARGET_HOST="192.168.1.252"
 TARGET_BIN="/usr/local/bin/microdns"
 BINARY="target/x86_64-unknown-linux-musl/release/microdns"
 

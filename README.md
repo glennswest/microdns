@@ -69,7 +69,7 @@ Each instance is authoritative for its own subnet zones. Cross-subnet queries ar
 
 | Instance | Network | IP | Zone | DHCP |
 |----------|---------|-----|------|------|
-| main | gw | 192.168.1.199 | gw.lo | no |
+| main | gw | 192.168.1.252 | gw.lo | no |
 | g10 | data | 192.168.10.252 | g10.lo | yes |
 | g11 | ipmi | 192.168.11.252 | g11.lo | yes |
 | gt | mgmt | 192.168.200.199 | gt.lo | no |
@@ -253,7 +253,7 @@ range_start = "192.168.1.100"
 range_end = "192.168.1.200"
 subnet = "192.168.1.0/24"
 gateway = "192.168.1.1"
-dns_servers = ["192.168.1.199"]
+dns_servers = ["192.168.1.252"]
 domain = "gw.lo"
 domain_search = ["gw.lo", "g10.lo", "g11.lo", "gt.lo"]
 lease_time_secs = 3600
