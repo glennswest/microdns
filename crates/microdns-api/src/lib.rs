@@ -18,6 +18,7 @@ use microdns_recursor::cache::DnsCache;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{broadcast, watch};
 use tracing::info;
 
@@ -71,6 +72,7 @@ pub struct AppState {
     pub message_bus: Option<Arc<dyn MessageBus>>,
     pub event_tx: broadcast::Sender<DashboardEvent>,
     pub recursor_cache: Option<Arc<DnsCache>>,
+    pub started_at: Instant,
 }
 
 impl ApiServer {
@@ -160,6 +162,7 @@ impl ApiServer {
             message_bus: self.message_bus,
             event_tx: self.event_tx,
             recursor_cache: self.recursor_cache,
+            started_at: Instant::now(),
         };
 
         // API router: /api/v1 routes with body limit + api_key auth + CORS

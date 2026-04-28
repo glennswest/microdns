@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-04-27
+- **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")
+
 ### 2026-04-01
 - **fix:** Add DHCP debug logging for root_path/iPXE diagnostics — logs reservation lookup, root_path chain (reservation → pool → effective), iPXE detection, and boot file selection per MAC
 
