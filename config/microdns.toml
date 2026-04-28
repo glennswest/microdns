@@ -6,7 +6,7 @@ mode = "standalone"
 
 [dns.auth]
 enabled = true
-listen = "0.0.0.0:15353"
+listen = "0.0.0.0:53"
 zones = ["example.com"]
 
 [api.rest]

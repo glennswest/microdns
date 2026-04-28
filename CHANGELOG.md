@@ -4,6 +4,7 @@
 
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")
+- **fix:** Default config DNS listen port 15353 → 53 — baked-in config caused stormd liveness probe (TCP 53) to fail when deploy ConfigMap wasn't mounted, triggering 30s restart loop
 
 ### 2026-04-01
 - **fix:** Add DHCP debug logging for root_path/iPXE diagnostics — logs reservation lookup, root_path chain (reservation → pool → effective), iPXE detection, and boot file selection per MAC
