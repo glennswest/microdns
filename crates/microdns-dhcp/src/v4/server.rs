@@ -473,10 +473,11 @@ impl Dhcpv4Server {
             }
         }
 
-        // Use reservation hostname if client didn't provide one
-        let hostname = request.hostname().or_else(|| {
-            self.get_reservation(&mac).and_then(|(_, h)| h)
-        });
+        // Reservation hostname takes priority over client-provided hostname
+        let hostname = self
+            .get_reservation(&mac)
+            .and_then(|(_, h)| h)
+            .or_else(|| request.hostname());
 
         let pool_info = {
             let pools = self.pools.lock().await;
