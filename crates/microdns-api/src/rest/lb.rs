@@ -16,6 +16,9 @@ pub fn router() -> Router<AppState> {
         .route("/lb/status", get(lb_status))
         .route("/lb/groups", get(lb_groups))
         .route("/lb/records", get(lb_records))
+        .route("/lb/log", get(lb_log))
+        .route("/lb/resolutions", get(lb_resolutions))
+        .route("/lb/debug", get(lb_debug))
         .route("/lb/probe/{record_id}", post(lb_probe))
         .route(
             "/zones/{zone_id}/records/lb/{name}/{rtype}",
@@ -308,6 +311,328 @@ async fn lb_records(
     });
 
     Ok(Json(rows))
+}
+
+// ─── GET /lb/log ────────────────────────────────────────────────────────────
+//
+// Last 200 state-change events, most recent first. Each entry has the
+// hostname, IP, old → new status, probe type, failsafe flag, and detail.
+
+#[derive(Serialize)]
+struct LogEntry {
+    at: DateTime<Utc>,
+    record_id: Uuid,
+    zone_name: String,
+    name: String,
+    fqdn: String,
+    ip: String,
+    record_type: String,
+    previous_status: Option<HealthStatus>,
+    status: HealthStatus,
+    failsafe: bool,
+    probe_type: ProbeType,
+    detail: String,
+}
+
+async fn lb_log(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<LogEntry>>, (StatusCode, String)> {
+    let lb = match &state.lb {
+        Some(h) => h,
+        None => return Ok(Json(Vec::new())),
+    };
+    let log = match &lb.log {
+        Some(l) => l,
+        None => return Ok(Json(Vec::new())),
+    };
+    let snap = log.lock().await.snapshot();
+    let rows: Vec<LogEntry> = snap
+        .into_iter()
+        .map(|c| LogEntry {
+            at: c.at,
+            record_id: c.record_id,
+            zone_name: c.zone_name.clone(),
+            name: c.name.clone(),
+            fqdn: build_fqdn(&c.name, &c.zone_name),
+            ip: c.ip,
+            record_type: c.record_type,
+            previous_status: c.previous_status,
+            status: c.status,
+            failsafe: c.failsafe,
+            probe_type: c.probe_type,
+            detail: c.detail,
+        })
+        .collect();
+    Ok(Json(rows))
+}
+
+// ─── GET /lb/resolutions ────────────────────────────────────────────────────
+//
+// For every monitored (zone, name, type) group, list the IPs that the
+// authoritative DNS server would return *right now* — i.e. the members
+// whose `enabled` bit is set. Equivalent of ploadb's "Current DNS
+// Resolution" panel.
+
+#[derive(Serialize)]
+struct ResolutionRow {
+    zone_id: Uuid,
+    zone_name: String,
+    name: String,
+    fqdn: String,
+    record_type: String,
+    answers: Vec<ResolutionAnswer>,
+    /// Total members of the group (enabled + disabled).
+    total_members: usize,
+}
+
+#[derive(Serialize)]
+struct ResolutionAnswer {
+    ip: String,
+    status: HealthStatus,
+    /// True if this answer is being returned only because of failsafe.
+    failsafe: bool,
+}
+
+async fn lb_resolutions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ResolutionRow>>, (StatusCode, String)> {
+    let lb = match &state.lb {
+        Some(h) => h,
+        None => return Ok(Json(Vec::new())),
+    };
+
+    let zones = state.db.list_zones().map_err(internal_error)?;
+    let zone_names: HashMap<Uuid, String> =
+        zones.iter().map(|z| (z.id, z.name.clone())).collect();
+
+    type GroupKey = (Uuid, String, String);
+    #[derive(Default)]
+    struct GroupAcc {
+        members: Vec<(String, HealthStatus, bool)>, // ip, status, enabled
+    }
+    let mut groups: HashMap<GroupKey, GroupAcc> = HashMap::new();
+
+    let snap = lb.state.lock().await;
+    for (id, h) in snap.iter() {
+        let key = (h.zone_id, h.record_name.clone(), h.record_type.clone());
+        let entry = groups.entry(key).or_default();
+        let ip = match state.db.get_record(id) {
+            Ok(Some(r)) => match r.data {
+                RecordData::A(a) => a.to_string(),
+                RecordData::AAAA(a) => a.to_string(),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let enabled = state
+            .db
+            .get_record(id)
+            .ok()
+            .flatten()
+            .map(|r| r.enabled)
+            .unwrap_or(true);
+        entry.members.push((ip, h.status, enabled));
+    }
+    drop(snap);
+
+    let mut out: Vec<ResolutionRow> = Vec::with_capacity(groups.len());
+    for ((zone_id, name, rtype), acc) in groups {
+        let zone_name = zone_names.get(&zone_id).cloned().unwrap_or_default();
+        let fqdn = build_fqdn(&name, &zone_name);
+        let total_members = acc.members.len();
+        let any_unhealthy_enabled = acc
+            .members
+            .iter()
+            .any(|(_, s, en)| *en && matches!(s, HealthStatus::Unhealthy));
+        let answers: Vec<ResolutionAnswer> = acc
+            .members
+            .into_iter()
+            .filter_map(|(ip, status, enabled)| {
+                if !enabled {
+                    return None;
+                }
+                let failsafe = matches!(status, HealthStatus::Unhealthy) && any_unhealthy_enabled;
+                Some(ResolutionAnswer {
+                    ip,
+                    status,
+                    failsafe,
+                })
+            })
+            .collect();
+        out.push(ResolutionRow {
+            zone_id,
+            zone_name,
+            name,
+            fqdn,
+            record_type: rtype,
+            answers,
+            total_members,
+        });
+    }
+
+    out.sort_by(|a, b| {
+        a.zone_name
+            .cmp(&b.zone_name)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.record_type.cmp(&b.record_type))
+    });
+
+    Ok(Json(out))
+}
+
+// ─── GET /lb/debug ──────────────────────────────────────────────────────────
+//
+// Dumps the raw in-memory HealthState plus persisted view for every
+// monitored record. Equivalent of ploadb's /debug endpoint — meant for
+// ops triage, not for programmatic consumption.
+
+#[derive(Serialize)]
+struct DebugDump {
+    enabled: bool,
+    config: DebugConfig,
+    icmp_available: bool,
+    halfopen_watcher_count: usize,
+    in_memory: Vec<DebugInMemoryRow>,
+    persisted: Vec<DebugPersistedRow>,
+}
+
+#[derive(Serialize)]
+struct DebugConfig {
+    check_interval_secs: u64,
+    default_probe: ProbeType,
+}
+
+#[derive(Serialize)]
+struct DebugInMemoryRow {
+    record_id: Uuid,
+    zone_id: Uuid,
+    zone_name: String,
+    name: String,
+    record_type: String,
+    status: HealthStatus,
+    probe_type_last: ProbeType,
+    success_count: u32,
+    failure_count: u32,
+    healthy_threshold: u32,
+    unhealthy_threshold: u32,
+    last_checked_at: Option<DateTime<Utc>>,
+    last_state_change_at: Option<DateTime<Utc>>,
+    last_healthy_at: Option<DateTime<Utc>>,
+    last_probe_detail: String,
+    record_enabled: Option<bool>,
+    record_ip: Option<String>,
+    record_health_check: Option<HealthCheck>,
+}
+
+#[derive(Serialize)]
+struct DebugPersistedRow {
+    record_id: Uuid,
+    status: HealthStatus,
+    probe_type: ProbeType,
+    last_checked_at: DateTime<Utc>,
+    last_state_change_at: DateTime<Utc>,
+    last_healthy_at: Option<DateTime<Utc>>,
+    last_probe_detail: String,
+    consecutive_successes: u32,
+    consecutive_failures: u32,
+}
+
+async fn lb_debug(
+    State(state): State<AppState>,
+) -> Result<Json<DebugDump>, (StatusCode, String)> {
+    let lb = match &state.lb {
+        Some(h) => h,
+        None => {
+            return Ok(Json(DebugDump {
+                enabled: false,
+                config: DebugConfig {
+                    check_interval_secs: 0,
+                    default_probe: ProbeType::Ping,
+                },
+                icmp_available: false,
+                halfopen_watcher_count: 0,
+                in_memory: Vec::new(),
+                persisted: Vec::new(),
+            }))
+        }
+    };
+
+    let zones = state.db.list_zones().map_err(internal_error)?;
+    let zone_names: HashMap<Uuid, String> =
+        zones.iter().map(|z| (z.id, z.name.clone())).collect();
+
+    let snap = lb.state.lock().await;
+    let mut in_memory: Vec<DebugInMemoryRow> = Vec::with_capacity(snap.len());
+    for (id, h) in snap.iter() {
+        let (record_enabled, record_ip, record_hc) = match state.db.get_record(id) {
+            Ok(Some(r)) => {
+                let ip = match r.data {
+                    RecordData::A(a) => Some(a.to_string()),
+                    RecordData::AAAA(a) => Some(a.to_string()),
+                    _ => None,
+                };
+                (Some(r.enabled), ip, r.health_check)
+            }
+            _ => (None, None, None),
+        };
+        in_memory.push(DebugInMemoryRow {
+            record_id: *id,
+            zone_id: h.zone_id,
+            zone_name: zone_names.get(&h.zone_id).cloned().unwrap_or_default(),
+            name: h.record_name.clone(),
+            record_type: h.record_type.clone(),
+            status: h.status,
+            probe_type_last: h.last_probe_type,
+            success_count: h.success_count,
+            failure_count: h.failure_count,
+            healthy_threshold: h.healthy_threshold,
+            unhealthy_threshold: h.unhealthy_threshold,
+            last_checked_at: h.last_checked_at,
+            last_state_change_at: h.last_state_change_at,
+            last_healthy_at: h.last_healthy_at,
+            last_probe_detail: h.last_probe_detail.clone(),
+            record_enabled,
+            record_ip,
+            record_health_check: record_hc,
+        });
+    }
+    drop(snap);
+
+    let persisted: Vec<DebugPersistedRow> = state
+        .db
+        .list_lb_health()
+        .map_err(internal_error)?
+        .into_iter()
+        .map(|p| DebugPersistedRow {
+            record_id: p.record_id,
+            status: p.status,
+            probe_type: p.last_probe_type,
+            last_checked_at: p.last_checked_at,
+            last_state_change_at: p.last_state_change_at,
+            last_healthy_at: p.last_healthy_at,
+            last_probe_detail: p.last_probe_detail,
+            consecutive_successes: p.consecutive_successes,
+            consecutive_failures: p.consecutive_failures,
+        })
+        .collect();
+
+    let icmp_available = microdns_lb::icmp::icmp_available().await;
+    let halfopen_count = match &lb.halfopen {
+        Some(h) => h.watcher_count().await,
+        None => 0,
+    };
+
+    Ok(Json(DebugDump {
+        enabled: true,
+        config: DebugConfig {
+            check_interval_secs: lb.check_interval_secs,
+            default_probe: lb.default_probe,
+        },
+        icmp_available,
+        halfopen_watcher_count: halfopen_count,
+        in_memory,
+        persisted,
+    }))
 }
 
 // ─── POST /lb/probe/{record_id} ─────────────────────────────────────────────

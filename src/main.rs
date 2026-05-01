@@ -332,6 +332,8 @@ async fn main() -> Result<()> {
                 events: monitor.events(),
                 check_interval_secs: lb_config.check_interval_secs,
                 default_probe,
+                halfopen: Some(monitor.halfopen()),
+                log: Some(monitor.log()),
             });
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {

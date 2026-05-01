@@ -27,8 +27,11 @@ pub async fn run_probe(
         ProbeType::Ping => ping_probe(target, timeout, ping_count).await,
         ProbeType::Http => http_probe(target, false, timeout, endpoint).await,
         ProbeType::Https => http_probe(target, true, timeout, endpoint).await,
-        ProbeType::Tcp => tcp_probe(target, timeout, endpoint, false).await,
-        ProbeType::TcpHalfOpen => tcp_probe(target, timeout, endpoint, true).await,
+        ProbeType::Tcp => tcp_probe(target, timeout, endpoint).await,
+        // TcpHalfOpen is handled out-of-band by the half-open manager,
+        // not by the probe cycle. If we ever land here, treat it as a
+        // best-effort connect to surface a probe error in the dashboard.
+        ProbeType::TcpHalfOpen => tcp_probe(target, timeout, endpoint).await,
     };
 
     let latency = start.elapsed();
@@ -139,48 +142,23 @@ async fn http_probe(
     }
 }
 
-/// TCP connect probe.
-///
-/// `half_open=false`: standard connect + drop. Closes gracefully (FIN/ACK).
-///
-/// `half_open=true`: completes the SYN/SYN-ACK handshake, then sets
-/// `SO_LINGER=0` so dropping the socket sends RST instead of FIN. The
-/// backend sees only the SYN/SYN-ACK exchange and a reset — no
-/// application-level connection is established, no half-open accept
-/// queue entry survives, and the prober avoids leaving a TIME_WAIT
-/// behind. Useful for high-frequency probes against services that
-/// would otherwise log every check as a real client.
+/// TCP connect probe — checks if a TCP connection can be established and
+/// closes it gracefully. For long-lived keepalive-driven monitoring, see
+/// `crate::halfopen`.
 async fn tcp_probe(
     target: IpAddr,
     timeout: Duration,
     endpoint: Option<&str>,
-    half_open: bool,
 ) -> Result<String, String> {
     let port: u16 = endpoint
         .and_then(|ep| ep.trim_start_matches(':').parse().ok())
         .unwrap_or(80);
 
     let addr = SocketAddr::new(target, port);
-    let label = if half_open { "tcp-half-open" } else { "tcp" };
     match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
-        Ok(Ok(stream)) => {
-            if half_open {
-                // SO_LINGER l_linger=0 → kernel sends RST on close. Set via
-                // socket2::SockRef because tokio deprecated set_linger over
-                // generic blocking concerns; with l_linger=0 the close is
-                // non-blocking (RST is queued and sent immediately), which
-                // is exactly the case we want.
-                let sock = socket2::SockRef::from(&stream);
-                if let Err(e) = sock.set_linger(Some(Duration::ZERO)) {
-                    return Err(format!("{label}/{port}: set_linger failed: {e}"));
-                }
-            }
-            // Drop closes the socket. With linger=0 this is RST; otherwise FIN.
-            drop(stream);
-            Ok(format!("{label}/{port} connected"))
-        }
-        Ok(Err(e)) => Err(format!("{label}/{port}: {e}")),
-        Err(_) => Err(format!("{label}/{port}: timeout")),
+        Ok(Ok(_)) => Ok(format!("tcp/{port} connected")),
+        Ok(Err(e)) => Err(format!("tcp/{port}: {e}")),
+        Err(_) => Err(format!("tcp/{port}: timeout")),
     }
 }
 
@@ -195,36 +173,9 @@ mod tests {
             "127.0.0.1".parse().unwrap(),
             Duration::from_secs(1),
             Some(":19999"),
-            false,
         )
         .await;
         // Should fail (connection refused)
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_tcp_half_open_against_listener() {
-        // Stand up a one-shot listener on a free port, probe it half-open,
-        // and verify the probe succeeds. We don't try to assert on the wire
-        // (RST is hard to observe portably from userspace) but we *do* prove
-        // the SO_LINGER=0 path runs without erroring.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move {
-            // Accept and immediately drop — we don't care what the prober sends
-            let _ = listener.accept().await;
-        });
-
-        let endpoint = format!(":{}", addr.port());
-        let result = tcp_probe(
-            addr.ip(),
-            Duration::from_secs(2),
-            Some(&endpoint),
-            true,
-        )
-        .await;
-
-        assert!(result.is_ok(), "half-open probe should succeed: {result:?}");
-        let _ = accept.await;
     }
 }

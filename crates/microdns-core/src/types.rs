@@ -164,12 +164,16 @@ pub enum ProbeType {
     /// Full TCP connect + graceful close. Backend sees a normal short-lived
     /// connection (FIN/ACK).
     Tcp,
-    /// TCP half-open: complete the SYN/SYN-ACK handshake, then send RST
-    /// immediately (SO_LINGER=0) instead of a graceful close. Validates
-    /// that the port is listening without producing an application-level
-    /// connection on the backend, and avoids TIME_WAIT on the prober.
-    /// Useful for high-frequency health checks against services that
-    /// would otherwise log/account every probe as a real client.
+    /// TCP half-open: hold one persistent TCP connection per record with
+    /// kernel keepalive enabled (`SO_KEEPALIVE` + `TCP_KEEPIDLE` /
+    /// `TCP_KEEPINTVL` / `TCP_KEEPCNT`). No application data flows; the
+    /// only packets on the wire are kernel keepalive probes. Failure of
+    /// the backend (RST, route gone, keepalive timeout) is detected
+    /// asynchronously by the OS and the record flips to `Unhealthy`
+    /// immediately — no probe duty cycle, no ICMP. When the kernel
+    /// reports recovery (reconnect succeeds) the record flips back to
+    /// `Healthy`. Failure-detection latency is governed by keepalive
+    /// tunables, not the probe interval.
     TcpHalfOpen,
 }
 

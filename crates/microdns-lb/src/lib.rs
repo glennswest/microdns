@@ -1,3 +1,4 @@
+pub mod halfopen;
 pub mod icmp;
 pub mod monitor;
 pub mod probe;

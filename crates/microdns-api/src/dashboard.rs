@@ -333,6 +333,62 @@ input::placeholder { color: var(--text-muted); }
   font-weight: 600;
 }
 
+/* ═══ LB three-panel layout ═══ */
+.lb-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 1100px) { .lb-grid { grid-template-columns: 1fr; } }
+.lb-panel { padding: 0; overflow: hidden; }
+.lb-panel-title {
+  padding: 10px 12px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+}
+.lb-panel-body {
+  padding: 10px 12px;
+  max-height: 560px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.lb-zone-name {
+  font-weight: 600;
+  margin: 8px 0 4px;
+  color: var(--text-primary);
+}
+.lb-host-name { margin: 4px 0 2px 8px; font-weight: 500; }
+.lb-ip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 6px;
+  margin: 2px 0 2px 16px;
+  border-radius: 3px;
+  border-left: 3px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.lb-ip-row.healthy   { border-left-color: var(--green); background: rgba(40,167,69,0.07); }
+.lb-ip-row.unhealthy { border-left-color: var(--red);   background: rgba(220,53,69,0.07); }
+.lb-ip-row.unknown   { border-left-color: var(--text-muted); }
+.lb-ip-row.failsafe  { border-left-color: var(--orange,#ff9f43); background: rgba(255,159,67,0.10); }
+.lb-tag { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: var(--bg-base); color: var(--text-muted); margin-left: 4px; }
+.lb-log-row {
+  display: grid;
+  grid-template-columns: 65px 1fr;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.lb-log-row:last-child { border-bottom: none; }
+.lb-log-time { color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, monospace; }
+.lb-log-arrow { color: var(--text-muted); margin: 0 4px; }
+.lb-empty { color: var(--text-muted); padding: 20px; text-align: center; }
+
 /* ═══ Modal ═══ */
 .modal-overlay {
   position: fixed;
@@ -545,7 +601,7 @@ input::placeholder { color: var(--text-muted); }
 <!-- ══════════════════════ LOAD BALANCER ══════════════════════ -->
 <div class="content" id="tab-lb">
   <div class="section-toolbar">
-    <h3>Health-Checked Records</h3>
+    <h3>Load Balancer</h3>
     <button class="btn btn-ghost btn-sm" onclick="loadLB()">Refresh</button>
   </div>
   <div class="grid g4" style="margin-bottom:12px">
@@ -554,22 +610,27 @@ input::placeholder { color: var(--text-muted); }
     <div class="card stat"><div class="val" id="lb-unhealthy" style="color:var(--red)">-</div><div class="lbl">Unhealthy</div></div>
     <div class="card stat"><div class="val" id="lb-groups">-</div><div class="lbl">Failover Groups</div></div>
   </div>
-  <div class="card" id="lb-groups-card" style="display:none;margin-bottom:12px">
-    <div class="card-title" style="margin-bottom:10px">Failover Groups</div>
-    <div id="lb-groups-body"></div>
-  </div>
-  <div class="card">
-    <div class="card-title" style="margin-bottom:10px">All Records</div>
-    <table>
-      <thead><tr><th>Zone</th><th>Name</th><th>IP</th><th>Status</th><th>Probe</th><th>Last check</th><th>Detail</th></tr></thead>
-      <tbody id="lb-records-table"></tbody>
-    </table>
-  </div>
-  <div class="card" id="lb-icmp-warning" style="display:none;margin-top:10px;border-left:3px solid var(--orange,#ff9f43)">
+  <div class="card" id="lb-icmp-warning" style="display:none;margin-bottom:12px;border-left:3px solid var(--orange,#ff9f43)">
     <div class="card-title" style="margin-bottom:6px">ICMP unavailable</div>
     <div style="font-size:12px;color:var(--text-muted)">
       Real ICMP could not be initialized on this instance (no <code>CAP_NET_RAW</code>?).
       Ping probes are falling back to TCP-reachability stand-in.
+    </div>
+  </div>
+
+  <!-- ploadb-style 3-panel grid: Targets / Resolutions / Log -->
+  <div class="lb-grid">
+    <div class="card lb-panel">
+      <div class="card-title lb-panel-title">Load Balanced Targets</div>
+      <div class="lb-panel-body" id="lb-targets-body">Loading…</div>
+    </div>
+    <div class="card lb-panel">
+      <div class="card-title lb-panel-title">Current DNS Resolution</div>
+      <div class="lb-panel-body" id="lb-resolutions-body">Loading…</div>
+    </div>
+    <div class="card lb-panel">
+      <div class="card-title lb-panel-title">Status Change Log</div>
+      <div class="lb-panel-body" id="lb-log-body">Loading…</div>
     </div>
   </div>
 </div>
@@ -1261,10 +1322,11 @@ function lbStatusBadge(status, failsafe) {
 
 async function loadLB() {
   try {
-    const [status, groups, records] = await Promise.all([
+    const [status, records, resolutions, log] = await Promise.all([
       apiFetch('/lb/status'),
-      apiFetch('/lb/groups'),
       apiFetch('/lb/records'),
+      apiFetch('/lb/resolutions'),
+      apiFetch('/lb/log'),
     ]);
 
     if (!status.enabled) {
@@ -1272,9 +1334,12 @@ async function loadLB() {
       document.getElementById('lb-healthy').textContent = '-';
       document.getElementById('lb-unhealthy').textContent = '-';
       document.getElementById('lb-groups').textContent = '-';
-      document.getElementById('lb-records-table').innerHTML =
-        '<tr><td colspan="7" style="color:var(--text-muted)">Load balancer disabled</td></tr>';
-      document.getElementById('lb-groups-card').style.display = 'none';
+      document.getElementById('lb-targets-body').innerHTML =
+        '<div class="lb-empty">Load balancer disabled</div>';
+      document.getElementById('lb-resolutions-body').innerHTML =
+        '<div class="lb-empty">Load balancer disabled</div>';
+      document.getElementById('lb-log-body').innerHTML =
+        '<div class="lb-empty">Load balancer disabled</div>';
       document.getElementById('lb-icmp-warning').style.display = 'none';
       return;
     }
@@ -1286,60 +1351,93 @@ async function loadLB() {
     document.getElementById('lb-icmp-warning').style.display =
       status.icmp_available ? 'none' : '';
 
-    // Groups card — only show multi-member groups.
-    const multi = groups.filter(g => g.members >= 2);
-    if (multi.length > 0) {
-      document.getElementById('lb-groups-card').style.display = '';
-      // Build a name → records map so we can list IPs under each group row.
-      const byKey = {};
-      records.forEach(r => {
-        const key = `${r.zone_id}|${r.name}|${r.record_type}`;
-        if (!byKey[key]) byKey[key] = [];
-        byKey[key].push(r);
-      });
-      document.getElementById('lb-groups-body').innerHTML = multi.map(g => {
-        const key = `${g.zone_id}|${g.name}|${g.record_type}`;
-        const recs = byKey[key] || [];
-        return `<div style="margin-bottom:10px;padding:8px;background:var(--bg-base);border-radius:4px">
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-            <span class="mono" style="font-weight:600">${esc(g.fqdn)}</span>
-            <span class="badge info">${esc(g.record_type)}</span>
-            <span style="font-size:11px;color:var(--text-muted)">${g.healthy}/${g.members} healthy</span>
-            ${g.failsafe_active ? '<span class="badge err">FAILSAFE</span>' : ''}
-          </div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">${recs.map(r =>
-            `<div style="display:flex;align-items:center;gap:4px;font-size:11px">
-              <span class="dot ${r.status==='healthy'?'green':r.status==='unhealthy'?'red':'gray'}"></span>
-              <span class="mono">${esc(r.ip)}</span>
-            </div>`
-          ).join('')}</div>
-        </div>`;
-      }).join('');
-    } else {
-      document.getElementById('lb-groups-card').style.display = 'none';
-    }
+    // ── Panel 1: Targets tree ─────────────────────────────────────────
+    // Group records by zone → name → IPs
+    const tree = {};
+    records.forEach(r => {
+      if (!tree[r.zone_name]) tree[r.zone_name] = {};
+      if (!tree[r.zone_name][r.name]) tree[r.zone_name][r.name] = [];
+      tree[r.zone_name][r.name].push(r);
+    });
+    const zoneNames = Object.keys(tree).sort();
+    const targetsHtml = zoneNames.length === 0
+      ? '<div class="lb-empty">No health-checked records</div>'
+      : zoneNames.map(z => {
+          const hosts = tree[z];
+          const hostNames = Object.keys(hosts).sort();
+          return `<div class="lb-zone-name">📁 ${esc(z)}</div>` + hostNames.map(h => {
+            const ips = hosts[h].sort((a,b)=>a.ip.localeCompare(b.ip,'en',{numeric:true}));
+            const fqdn = h === '@' || h === '' ? z : `${h}.${z}`;
+            return `<div class="lb-host-name">🌐 ${esc(fqdn)}</div>` + ips.map(r => {
+              const cls = r.status === 'healthy'   ? 'healthy'
+                        : r.status === 'unhealthy' && r.enabled ? 'failsafe'
+                        : r.status === 'unhealthy' ? 'unhealthy'
+                        : 'unknown';
+              const failsafe = cls === 'failsafe';
+              return `<div class="lb-ip-row ${cls}">
+                <span>${esc(r.ip)}<span class="lb-tag">${esc(r.probe_type)}</span></span>
+                <span>${lbStatusBadge(r.status, failsafe)}</span>
+              </div>`;
+            }).join('');
+          }).join('');
+        }).join('');
+    document.getElementById('lb-targets-body').innerHTML = targetsHtml;
 
-    // Records table
-    document.getElementById('lb-records-table').innerHTML = records.map(r => {
-      const ageTxt = r.last_checked_at
-        ? fmtAge(r.age_seconds)
-        : '<span style="color:var(--text-muted)">never</span>';
-      const staleStyle = r.stale ? 'color:var(--orange,#ff9f43);' : '';
-      // failsafe: enabled==true AND status==unhealthy (group has all-down)
-      const failsafe = r.enabled && r.status === 'unhealthy';
-      return `<tr>
-        <td class="mono">${esc(r.zone_name)}</td>
-        <td class="mono">${esc(r.name)}</td>
-        <td class="mono">${esc(r.ip)}</td>
-        <td>${lbStatusBadge(r.status, failsafe)}</td>
-        <td>${esc(r.probe_type)}</td>
-        <td style="${staleStyle}font-size:11px">${ageTxt}${r.stale?' <span class="badge err" style="font-size:9px">stale</span>':''}</td>
-        <td style="font-size:11px;color:var(--text-muted)" title="${esc(r.last_probe_detail)}">${esc((r.last_probe_detail||'').slice(0,40))}</td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="7" style="color:var(--text-muted)">No health-checked records</td></tr>';
+    // ── Panel 2: DNS Resolution ───────────────────────────────────────
+    const resolutionsHtml = resolutions.length === 0
+      ? '<div class="lb-empty">No load-balanced names</div>'
+      : resolutions.map(r => {
+          const enabled = r.answers.length;
+          const hasFailsafe = r.answers.some(a => a.failsafe);
+          const summary = `${enabled}/${r.total_members} returned${hasFailsafe?' (failsafe)':''}`;
+          if (enabled === 0) {
+            return `<div class="lb-zone-name">${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span></div>
+              <div class="lb-empty" style="padding:6px 0;text-align:left;font-size:11px">NODATA — every member disabled</div>`;
+          }
+          return `<div class="lb-zone-name">${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span> <span class="lb-tag" style="float:right">${summary}</span></div>` +
+            r.answers.map(a => {
+              const cls = a.failsafe ? 'failsafe' : a.status === 'healthy' ? 'healthy' : 'unhealthy';
+              return `<div class="lb-ip-row ${cls}">
+                <span>${esc(a.ip)}</span>
+                <span>${a.failsafe ? '<span class="badge err" style="font-size:9px">FAILSAFE</span>' : '<span class="badge ok" style="font-size:9px">RETURNED</span>'}</span>
+              </div>`;
+            }).join('');
+        }).join('');
+    document.getElementById('lb-resolutions-body').innerHTML = resolutionsHtml;
+
+    // ── Panel 3: Status Change Log ────────────────────────────────────
+    const logHtml = log.length === 0
+      ? '<div class="lb-empty">No state changes recorded</div>'
+      : log.map(e => {
+          const t = new Date(e.at);
+          const tStr = t.toLocaleTimeString();
+          const prev = e.previous_status || 'unknown';
+          const next = e.status;
+          const prevCls = lbStatusColor(prev);
+          const nextCls = lbStatusColor(next);
+          const failsafeTag = e.failsafe ? ' <span class="badge err" style="font-size:9px">failsafe</span>' : '';
+          return `<div class="lb-log-row">
+            <span class="lb-log-time">${esc(tStr)}</span>
+            <div>
+              <span class="mono" style="font-weight:600">${esc(e.fqdn)}</span> ${esc(e.ip)}<br>
+              <span style="color:${prevCls}">${esc(prev)}</span><span class="lb-log-arrow">→</span><span style="color:${nextCls}">${esc(next)}</span>${failsafeTag}
+              <span class="lb-tag">${esc(e.probe_type)}</span>
+              <div style="color:var(--text-muted);font-size:10px">${esc((e.detail||'').slice(0,80))}</div>
+            </div>
+          </div>`;
+        }).join('');
+    document.getElementById('lb-log-body').innerHTML = logHtml;
   } catch(e) {
-    document.getElementById('lb-records-table').innerHTML = `<tr><td colspan="7" style="color:var(--text-muted)">Error: ${esc(e.message)}</td></tr>`;
+    document.getElementById('lb-targets-body').innerHTML = `<div class="lb-empty">Error: ${esc(e.message)}</div>`;
+    document.getElementById('lb-resolutions-body').innerHTML = '';
+    document.getElementById('lb-log-body').innerHTML = '';
   }
+}
+
+function lbStatusColor(status) {
+  if (status === 'healthy')   return 'var(--green)';
+  if (status === 'unhealthy') return 'var(--red)';
+  return 'var(--text-muted)';
 }
 
 // ─── DHCP Tab ───

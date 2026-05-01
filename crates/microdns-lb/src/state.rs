@@ -260,6 +260,23 @@ impl HealthState {
             .record_result(success, now, probe_type, detail)
     }
 
+    /// Like `record_probe_result`, but also returns the previous status
+    /// (whether or not it changed). Used by callers that want to fill the
+    /// "old → new" portion of a state-change log entry.
+    pub fn record_probe_result_with_prev(
+        &mut self,
+        record_id: &Uuid,
+        success: bool,
+        now: DateTime<Utc>,
+        probe_type: ProbeType,
+        detail: String,
+    ) -> Option<(HealthStatus, Option<HealthStatus>)> {
+        let h = self.records.get_mut(record_id)?;
+        let prev = h.status;
+        let change = h.record_result(success, now, probe_type, detail);
+        Some((prev, change))
+    }
+
     /// Failsafe grouping: for every `(zone_id, name, type)` group with 2+
     /// members where every member is Unhealthy, return the record_id with
     /// the most recent `last_healthy_at` (deterministic "last alive"). If

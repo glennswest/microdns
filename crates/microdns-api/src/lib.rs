@@ -14,6 +14,8 @@ use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
 use microdns_core::types::ProbeType;
 use microdns_federation::heartbeat::HeartbeatTracker;
+use microdns_lb::halfopen::HalfOpenManager;
+use microdns_lb::monitor::StateChangeLog;
 use microdns_lb::{HealthState, StateChange};
 use microdns_msg::MessageBus;
 use microdns_recursor::cache::DnsCache;
@@ -58,6 +60,8 @@ pub struct LbHandles {
     pub events: broadcast::Sender<StateChange>,
     pub check_interval_secs: u64,
     pub default_probe: ProbeType,
+    pub halfopen: Option<Arc<HalfOpenManager>>,
+    pub log: Option<Arc<Mutex<StateChangeLog>>>,
 }
 
 /// Dashboard event for real-time UI updates via broadcast channel

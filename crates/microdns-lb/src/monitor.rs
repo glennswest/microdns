@@ -1,12 +1,14 @@
+use crate::halfopen::{HalfOpenManager, WatcherSpec};
 use crate::probe;
 use crate::state::{HealthState, RecordHealth};
 use chrono::Utc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use microdns_core::db::Db;
 use microdns_core::types::{HealthStatus, ProbeType, RecordData};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::VecDeque;
 use tokio::sync::{broadcast, watch, Mutex, Semaphore};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -44,11 +46,51 @@ pub struct StateChange {
     pub name: String,
     pub ip: String,
     pub record_type: String,
+    /// New status the record transitioned *to*.
     pub status: HealthStatus,
+    /// Status the record transitioned *from*. None on the very first
+    /// observation (Unknown → first probe result).
+    #[serde(default)]
+    pub previous_status: Option<HealthStatus>,
     pub failsafe: bool,
     pub probe_type: ProbeType,
     pub detail: String,
     pub at: chrono::DateTime<Utc>,
+}
+
+/// Ring buffer of recent state changes (last 200) for the dashboard
+/// "Status Change Log" panel.
+pub const STATE_LOG_CAPACITY: usize = 200;
+
+#[derive(Debug, Clone)]
+pub struct StateChangeLog {
+    entries: VecDeque<StateChange>,
+}
+
+impl StateChangeLog {
+    pub fn new() -> Self {
+        Self {
+            entries: VecDeque::with_capacity(STATE_LOG_CAPACITY),
+        }
+    }
+
+    pub fn push(&mut self, change: StateChange) {
+        if self.entries.len() == STATE_LOG_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(change);
+    }
+
+    /// Most-recent first.
+    pub fn snapshot(&self) -> Vec<StateChange> {
+        self.entries.iter().rev().cloned().collect()
+    }
+}
+
+impl Default for StateChangeLog {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// The health-check monitor. Runs a probe cycle every `check_interval`
@@ -58,6 +100,8 @@ pub struct HealthMonitor {
     config: MonitorConfig,
     state: Arc<Mutex<HealthState>>,
     events: broadcast::Sender<StateChange>,
+    halfopen: Arc<HalfOpenManager>,
+    log: Arc<Mutex<StateChangeLog>>,
 }
 
 impl HealthMonitor {
@@ -76,16 +120,46 @@ impl HealthMonitor {
 
     pub fn with_config(db: Db, config: MonitorConfig) -> Self {
         let (events, _) = broadcast::channel(256);
+        let state = Arc::new(Mutex::new(HealthState::new()));
+        let halfopen = Arc::new(HalfOpenManager::new(state.clone(), events.clone()));
+        let log = Arc::new(Mutex::new(StateChangeLog::new()));
+
+        // Background task: drain state-change events into the ring buffer
+        // so consumers can pull the recent history via /lb/log.
+        let log_writer = log.clone();
+        let mut log_rx = events.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match log_rx.recv().await {
+                    Ok(change) => {
+                        log_writer.lock().await.push(change);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
         Self {
             db,
             config,
-            state: Arc::new(Mutex::new(HealthState::new())),
+            state,
             events,
+            halfopen,
+            log,
         }
     }
 
     pub fn state(&self) -> Arc<Mutex<HealthState>> {
         self.state.clone()
+    }
+
+    pub fn halfopen(&self) -> Arc<HalfOpenManager> {
+        self.halfopen.clone()
+    }
+
+    pub fn log(&self) -> Arc<Mutex<StateChangeLog>> {
+        self.log.clone()
     }
 
     pub fn config(&self) -> &MonitorConfig {
@@ -136,6 +210,7 @@ impl HealthMonitor {
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!("health monitor shutting down");
+                        self.halfopen.shutdown().await;
                         break;
                     }
                 }
@@ -219,6 +294,8 @@ impl HealthMonitor {
         let mut zone_names: std::collections::HashMap<Uuid, String> =
             std::collections::HashMap::new();
         let mut targets: Vec<ProbeTarget> = Vec::new();
+        let mut halfopen_ids: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
 
         for zone in &zones {
             zone_names.insert(zone.id, zone.name.clone());
@@ -253,6 +330,29 @@ impl HealthMonitor {
                     self.config.default_timeout
                 };
                 let endpoint = hc.endpoint.clone();
+
+                // Half-open records are handled by long-lived per-record
+                // tasks, not by the probe cycle. Make sure a watcher is
+                // running and skip adding it to `targets`.
+                if probe_type == ProbeType::TcpHalfOpen {
+                    let port = parse_port(endpoint.as_deref()).unwrap_or(80);
+                    let socket_addr = SocketAddr::new(target_ip, port);
+                    self.halfopen
+                        .ensure(WatcherSpec {
+                            record_id: record.id,
+                            zone_id: record.zone_id,
+                            zone_name: zone.name.clone(),
+                            name: record.name.clone(),
+                            record_type: record.data.record_type().to_string(),
+                            target: socket_addr,
+                            keepalive_secs: timeout.as_secs(),
+                            reconnect_secs: timeout.as_secs(),
+                        })
+                        .await;
+                    halfopen_ids.insert(record.id);
+                    continue;
+                }
+
                 targets.push(ProbeTarget {
                     record_id: record.id,
                     zone_id: record.zone_id,
@@ -268,19 +368,33 @@ impl HealthMonitor {
         }
 
         // Drop in-memory state for records that no longer exist.
-        let live: std::collections::HashSet<Uuid> =
+        // Live set is the union of probe targets AND half-open record IDs
+        // we just ensure()d this cycle.
+        let mut live: std::collections::HashSet<Uuid> =
             targets.iter().map(|t| t.record_id).collect();
+        live.extend(halfopen_ids.iter().copied());
         let dropped = {
             let mut state = self.state.lock().await;
             state.retain_only(&live)
         };
-        for id in dropped {
-            if let Err(e) = self.db.delete_lb_health(&id) {
+        for id in &dropped {
+            if let Err(e) = self.db.delete_lb_health(id) {
                 warn!("cleanup: delete_lb_health({id}) failed: {e}");
             }
         }
+        // Tear down any half-open watchers whose record is gone.
+        let _ = self.halfopen.retain_only(&live).await;
 
         if targets.is_empty() {
+            // No probe targets this cycle — but half-open watchers may have
+            // updated state. Persist and emit zero-probed status.
+            let snapshot = {
+                let state = self.state.lock().await;
+                state.snapshot_persisted()
+            };
+            if let Err(e) = self.db.upsert_lb_health_batch(&snapshot) {
+                warn!("LB persist snapshot failed: {e}");
+            }
             return Ok(0);
         }
 
@@ -318,7 +432,7 @@ impl HealthMonitor {
         {
             let mut state = self.state.lock().await;
             for (target, result) in &results {
-                let change = state.record_probe_result(
+                let result_with_prev = state.record_probe_result_with_prev(
                     &target.record_id,
                     result.success,
                     now,
@@ -334,7 +448,7 @@ impl HealthMonitor {
                     to_update_in_db.push((target.record_id, should_be_enabled));
                 }
 
-                if let Some(new_status) = change {
+                if let Some((prev, Some(new_status))) = result_with_prev {
                     let zone_name = zone_names
                         .get(&target.zone_id)
                         .cloned()
@@ -347,6 +461,7 @@ impl HealthMonitor {
                         ip: target.target_ip.to_string(),
                         record_type: target.rtype.clone(),
                         status: new_status,
+                        previous_status: Some(prev),
                         failsafe: false,
                         probe_type: target.probe_type,
                         detail: result.detail.clone(),
@@ -402,6 +517,7 @@ impl HealthMonitor {
                         ip,
                         record_type: rtype,
                         status: HealthStatus::Unhealthy,
+                        previous_status: Some(HealthStatus::Unhealthy),
                         failsafe: true,
                         probe_type: ptype,
                         detail,
@@ -461,6 +577,18 @@ impl HealthMonitor {
 
         Ok(results.len())
     }
+}
+
+/// Parse `:port` or `:port/path` style endpoints into a port. Returns
+/// `None` if the endpoint is empty or unparseable.
+fn parse_port(endpoint: Option<&str>) -> Option<u16> {
+    let ep = endpoint?;
+    let rest = ep.strip_prefix(':').unwrap_or(ep);
+    let port_str = match rest.find('/') {
+        Some(i) => &rest[..i],
+        None => rest,
+    };
+    port_str.parse().ok()
 }
 
 #[derive(Debug, Clone)]
