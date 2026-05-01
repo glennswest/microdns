@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-05-01
+- **docs:** Load balancer parity design — `docs/loadbalancer-design.md` inventories ploadb (pdnsloadbalancer) functionality, gaps in current `microdns-lb`, and approved plan to reach feature parity (group-keyed probe config, two-pass parallel cycle, real ICMP, last-alive failsafe, REST API, dashboard wiring)
+
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")
 - **fix:** Default config DNS listen port 15353 → 53 — baked-in config caused stormd liveness probe (TCP 53) to fail when deploy ConfigMap wasn't mounted, triggering 30s restart loop
