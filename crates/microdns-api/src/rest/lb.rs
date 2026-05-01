@@ -383,6 +383,25 @@ struct ResolutionRow {
     answers: Vec<ResolutionAnswer>,
     /// Total members of the group (enabled + disabled).
     total_members: usize,
+    /// Service-level status: "up" if any member is Healthy, "down" if all
+    /// members are Unhealthy or Unknown (no traffic-ready answer).
+    service_status: ServiceStatus,
+    /// When the service entered its current state.
+    /// - For UP: timestamp of the longest continuously-Healthy member's
+    ///   most recent Healthy transition. Service has been continuously
+    ///   serving since at least this moment.
+    /// - For DOWN: timestamp of the most recent member transition (the
+    ///   moment the last member went unhealthy).
+    /// Null if no member has ever been observed (Unknown).
+    service_since: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ServiceStatus {
+    Up,
+    Down,
+    Unknown,
 }
 
 #[derive(Serialize)]
@@ -408,9 +427,16 @@ async fn lb_resolutions(
         zones.iter().map(|z| (z.id, z.name.clone())).collect();
 
     type GroupKey = (Uuid, String, String);
+    struct Member {
+        ip: String,
+        status: HealthStatus,
+        enabled: bool,
+        ttl: u32,
+        last_state_change_at: Option<DateTime<Utc>>,
+    }
     #[derive(Default)]
     struct GroupAcc {
-        members: Vec<(String, HealthStatus, bool, u32)>, // ip, status, enabled, ttl
+        members: Vec<Member>,
     }
     let mut groups: HashMap<GroupKey, GroupAcc> = HashMap::new();
 
@@ -427,7 +453,13 @@ async fn lb_resolutions(
             RecordData::AAAA(a) => a.to_string(),
             _ => continue,
         };
-        entry.members.push((ip, h.status, rec.enabled, rec.ttl));
+        entry.members.push(Member {
+            ip,
+            status: h.status,
+            enabled: rec.enabled,
+            ttl: rec.ttl,
+            last_state_change_at: h.last_state_change_at,
+        });
     }
     drop(snap);
 
@@ -439,20 +471,57 @@ async fn lb_resolutions(
         let any_unhealthy_enabled = acc
             .members
             .iter()
-            .any(|(_, s, en, _)| *en && matches!(s, HealthStatus::Unhealthy));
+            .any(|m| m.enabled && matches!(m.status, HealthStatus::Unhealthy));
+
+        // Service uptime: UP if any member Healthy, DOWN if all unhealthy,
+        // Unknown if any member never probed (no transition yet).
+        let any_healthy = acc
+            .members
+            .iter()
+            .any(|m| matches!(m.status, HealthStatus::Healthy));
+        let any_observed = acc
+            .members
+            .iter()
+            .any(|m| !matches!(m.status, HealthStatus::Unknown));
+        let (service_status, service_since) = if any_healthy {
+            // UP. Service has been continuously up since at least the
+            // earliest "transitioned-to-Healthy" moment among members
+            // currently healthy. (If any member never went down through
+            // a group-wide outage, its transition time predates the
+            // last outage and represents real continuous uptime.)
+            let since = acc
+                .members
+                .iter()
+                .filter(|m| matches!(m.status, HealthStatus::Healthy))
+                .filter_map(|m| m.last_state_change_at)
+                .min();
+            (ServiceStatus::Up, since)
+        } else if any_observed {
+            // DOWN. The "down since" is the latest unhealthy transition
+            // — when the last surviving member fell over.
+            let since = acc
+                .members
+                .iter()
+                .filter_map(|m| m.last_state_change_at)
+                .max();
+            (ServiceStatus::Down, since)
+        } else {
+            (ServiceStatus::Unknown, None)
+        };
+
         let answers: Vec<ResolutionAnswer> = acc
             .members
             .into_iter()
-            .filter_map(|(ip, status, enabled, ttl)| {
-                if !enabled {
+            .filter_map(|m| {
+                if !m.enabled {
                     return None;
                 }
-                let failsafe = matches!(status, HealthStatus::Unhealthy) && any_unhealthy_enabled;
+                let failsafe = matches!(m.status, HealthStatus::Unhealthy) && any_unhealthy_enabled;
                 Some(ResolutionAnswer {
-                    ip,
-                    status,
+                    ip: m.ip,
+                    status: m.status,
                     failsafe,
-                    ttl,
+                    ttl: m.ttl,
                 })
             })
             .collect();
@@ -464,6 +533,8 @@ async fn lb_resolutions(
             record_type: rtype,
             answers,
             total_members,
+            service_status,
+            service_since,
         });
     }
 

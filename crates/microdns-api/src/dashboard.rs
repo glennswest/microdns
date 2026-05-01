@@ -1421,30 +1421,44 @@ async function loadLB() {
     document.getElementById('lb-targets-body').innerHTML = targetsHtml;
 
     // ── Panel 2: DNS Resolution ───────────────────────────────────────
-    // Per FQDN: which IPs the authoritative server returns right now,
-    // with TTL per answer. (microdns auth reads directly from redb;
-    // there's no separate auth-vs-recursor cache to query.)
+    // Per FQDN: service status (UP for / DOWN since), then which IPs the
+    // authoritative server returns right now with TTL per answer.
     const resolutionsHtml = resolutions.length === 0
       ? '<div class="lb-empty">No load-balanced names</div>'
       : resolutions.map(r => {
+          const sinceSecs = durationSinceIso(r.service_since);
+          let serviceLine;
+          if (r.service_status === 'up') {
+            serviceLine = `<span class="badge ok" style="font-size:9px">UP</span> for ${fmtDuration(sinceSecs)}`;
+          } else if (r.service_status === 'down') {
+            serviceLine = `<span class="badge err" style="font-size:9px">DOWN</span> since ${fmtDuration(sinceSecs)} ago`;
+          } else {
+            serviceLine = `<span class="badge info" style="font-size:9px">UNKNOWN</span>`;
+          }
+
           const enabled = r.answers.length;
           const hasFailsafe = r.answers.some(a => a.failsafe);
           const summary = `${enabled}/${r.total_members} returned${hasFailsafe?' (failsafe)':''}`;
+
+          const header = `<div class="lb-zone-name">🔍 ${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span></div>
+            <div style="margin-left:8px;font-size:11px;color:var(--text-muted);margin-bottom:4px">
+              ${serviceLine}
+              <span style="float:right">${esc(summary)}</span>
+            </div>`;
+
           if (enabled === 0) {
-            return `<div class="lb-zone-name">🔍 ${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span></div>
-              <div class="lb-empty" style="padding:6px 0;text-align:left;font-size:11px">NODATA — every member disabled</div>`;
+            return header + `<div class="lb-empty" style="padding:6px 0;text-align:left;font-size:11px">NODATA — every member disabled</div>`;
           }
-          return `<div class="lb-zone-name">🔍 ${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span> <span class="lb-tag" style="float:right">${summary}</span></div>` +
-            r.answers.map(a => {
-              const cls = a.failsafe ? 'failsafe' : a.status === 'healthy' ? 'healthy' : 'unhealthy';
-              return `<div class="lb-ip-row ${cls}">
-                <span>🌐 ${esc(a.ip)}</span>
-                <span>
-                  <span class="lb-tag" title="record TTL">TTL ${a.ttl}s</span>
-                  ${a.failsafe ? '<span class="badge err" style="font-size:9px">FAILSAFE</span>' : '<span class="badge ok" style="font-size:9px">RETURNED</span>'}
-                </span>
-              </div>`;
-            }).join('');
+          return header + r.answers.map(a => {
+            const cls = a.failsafe ? 'failsafe' : a.status === 'healthy' ? 'healthy' : 'unhealthy';
+            return `<div class="lb-ip-row ${cls}">
+              <span>🌐 ${esc(a.ip)}</span>
+              <span>
+                <span class="lb-tag" title="record TTL">TTL ${a.ttl}s</span>
+                ${a.failsafe ? '<span class="badge err" style="font-size:9px">FAILSAFE</span>' : '<span class="badge ok" style="font-size:9px">RETURNED</span>'}
+              </span>
+            </div>`;
+          }).join('');
         }).join('');
     document.getElementById('lb-resolutions-body').innerHTML = resolutionsHtml;
 
