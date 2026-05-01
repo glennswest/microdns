@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 ### 2026-05-01
-- **docs:** Load balancer parity design — `docs/loadbalancer-design.md` inventories ploadb (pdnsloadbalancer) functionality, gaps in current `microdns-lb`, and approved plan to reach feature parity (group-keyed probe config, two-pass parallel cycle, real ICMP, last-alive failsafe, REST API, dashboard wiring)
+- **docs:** Load balancer parity design — `docs/loadbalancer-design.md` inventories ploadb (pdnsloadbalancer) functionality, gaps in current `microdns-lb`, and approved plan to reach feature parity (per-record probe config, two-pass parallel cycle, real ICMP, last-alive failsafe, REST API, dashboard wiring)
+- **fix:** DHCP DNS registration — reservation hostname now takes priority over the client's announced hostname (was the other way around). Ensures clients with stable reservations register the operator-assigned name in DNS regardless of what the device claims to be called
 
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")

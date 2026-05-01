@@ -5,8 +5,12 @@ Date: 2026-05-01
 
 ## Approved decisions (2026-05-01)
 
-- **Group-keyed config**: yes. New `lb_groups` table keyed on
-  `(zone_id, name, type)`. Per-record `health_check` stays as an override.
+- **Per-record config** (decided): probe configuration stays on each
+  `Record.health_check`. No new `lb_groups` table, no inheritance. The REST
+  API gets a convenience endpoint to apply a `HealthCheck` blob to every
+  member of a `(zone, name, type)` group in a single call, but the storage
+  remains per-record. Grouping for failsafe is still computed at runtime
+  from `(zone_id, name, record_type)` (already implemented in `state.rs`).
 - **Real ICMP via `surge-ping`**: yes. DaemonSet gets `NET_RAW`. TCP fallback
   with one-time warning if the capability isn't available.
 - **No persistence of runtime health state**: confirmed. Records start
@@ -96,19 +100,24 @@ stores **one DB row per A IP**. The grouping for load-balancing/failsafe is
 already keyed on `(zone_id, name, record_type)` in `state.rs:121` — that is the
 right primitive. Keep this model. No schema change.
 
-### 4.2 Where probe config lives
+### 4.2 Where probe config lives — per-record (decided)
 
-Two paths to consider:
-1. **Per-record** (current) — every A row carries its own `HealthCheck`. Easy
-   model, but the user has to set the same config on every IP in the group.
-2. **Per-name (rrset-equivalent)** — config stored once for `(zone, name, type)`,
-   inherited by all members.
+Each A row carries its own `Record.health_check: Option<HealthCheck>`. No new
+table, no inheritance.
 
-Recommend **option 2** with a small new table `lb_groups` keyed on
-`(zone_id, name, type)`. Per-record `HealthCheck` stays as an override for
-single-IP records or special cases. This matches ploadb's "comments on the
-rrset" semantics. The REST API gets `PUT /zones/{id}/lb/{name}/{type}` to set
-the group config in one call.
+Setting the same config on every IP of a load-balanced name is a write-side
+ergonomic problem, not a runtime one. Solve it with a convenience endpoint:
+
+```
+PUT /api/v1/zones/{zone_id}/records/lb/{name}/{type}
+  body: HealthCheck JSON
+  → writes that HealthCheck onto every existing record matching
+    (zone_id, name, type). New records added later still need the config
+    set explicitly (or via the same endpoint re-run).
+```
+
+Failsafe grouping is already computed at runtime from
+`(zone_id, name, record_type)` in `state.rs:121` — keep that.
 
 ### 4.3 Failsafe — last alive
 
@@ -162,12 +171,14 @@ GET  /api/v1/lb/records
                   last_checked_at, last_state_change_at, last_probe_detail,
                   consecutive_successes, consecutive_failures)
 
-PUT  /api/v1/zones/{zone_id}/lb/{name}/{type}
+PUT  /api/v1/zones/{zone_id}/records/lb/{name}/{type}
        body: HealthCheck JSON
-       → applies probe config to the group (creates lb_groups row)
+       → writes that HealthCheck onto every existing record matching
+         (zone_id, name, type). Convenience for setting the same probe
+         config on every IP of a load-balanced name.
 
-DELETE /api/v1/zones/{zone_id}/lb/{name}/{type}
-       → removes group config; members fall back to per-record config or none
+DELETE /api/v1/zones/{zone_id}/records/lb/{name}/{type}
+       → clears HealthCheck (sets to None) on every member record
 
 POST /api/v1/lb/probe/{record_id}
        → fire a one-shot probe and return the result (for ops/debugging)
@@ -197,26 +208,13 @@ The "Load Balancer" tab shell already exists in `dashboard.rs` but is empty.
 Wire it to `/api/v1/lb/status` + the WS event above. UI columns:
 zone / name / IP / status badge / probe type / last-check / detail.
 
-## 6. Storage additions
+## 6. Storage
 
-### 6.1 New redb table
-
-```rust
-// (zone_id, name, type) → HealthCheck JSON
-const LB_GROUPS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("lb_groups");
-// key format: "{zone_id}:{name}:{type}"
-```
-
-Resolution order when probing a record:
-1. Group config for `(zone_id, name, type)`
-2. Per-record `Record.health_check`
-3. None ⇒ skip
-
-### 6.2 No persistence of runtime state
-
-`HealthState` stays in-memory. After restart, every record starts `Unknown`
-and is reprobed within `check_interval_secs`. Don't persist health — it's
-fast-changing and the disabled-bit on the record is the durable artifact.
+No schema changes. Probe config stays in `Record.health_check: Option<HealthCheck>`
+on each row, exactly as today. `HealthState` stays in-memory: after restart,
+every record starts `Unknown` and is reprobed within `check_interval_secs`.
+The durable artifact is the `enabled` bit on the record, which is what query
+responses already filter on.
 
 ## 7. Config (`config.toml`)
 
@@ -237,27 +235,33 @@ default_timeout_secs = 5
 1. **No breaking changes** — existing per-record `HealthCheck` keeps working.
 2. ploadb instances can run alongside microdns during cutover (different
    targets — ploadb hits PowerDNS, microdns owns its own zones).
-3. For each zone migrated from PowerDNS to microdns, run a one-shot importer
-   that reads ploadb's rrset comments and writes equivalent `lb_groups` rows.
-   (Out of scope here — separate ticket.)
+3. For each zone migrated from PowerDNS to microdns, an optional one-shot
+   importer can read ploadb's rrset comments and write the equivalent
+   `HealthCheck` onto every member record (out of scope for the umbrella PR
+   — separate ticket).
 
-## 9. Work breakdown
+## 9. Work breakdown (single PR)
 
-Suggested PR sequencing (each ≤ ~400 lines for reviewability):
+The umbrella PR delivers all of the below; logically sequenced for reviewer
+sanity but landed together:
 
-1. **Core plumbing** — `lb_groups` table, group-config resolution, group-keyed
-   `HealthState` API (no behavior change yet).
-2. **Two-pass cycle + parallel probes** — refactor `monitor.rs`, add timing
-   metrics. Add `last_checked_at`, `last_state_change_at`, `last_probe_detail`
-   to `RecordHealth`.
-3. **Last-alive failsafe** — track `last_healthy_at`, change failsafe selection.
-4. **Real ICMP** — `surge-ping` crate, capability check, TCP fallback warning.
-5. **REST endpoints** — `/api/v1/lb/*` (status, groups, records, group CRUD,
-   one-shot probe).
-6. **Dashboard tab + WS event** — populate the existing LB tab; emit
-   `lb_state_change` events on the existing WS.
-7. **Container manifest** — add `NET_RAW` capability in mkube-rendered DaemonSet.
-8. **Config → group importer (optional)** — TOML import to bootstrap groups.
+1. **Two-pass cycle + parallel probes** — refactor `monitor.rs`. Add
+   `last_checked_at`, `last_state_change_at`, `last_probe_detail`,
+   `last_healthy_at` to `RecordHealth`. Initial state = `Unknown`.
+2. **Last-alive failsafe** — pick member with most recent `last_healthy_at`
+   (deterministic, matches ploadb v2.2).
+3. **Real ICMP** — add `surge-ping` to `microdns-lb`. Detect missing
+   `CAP_NET_RAW` at startup, log a one-time warning, fall back to current
+   TCP-reachability stand-in.
+4. **REST endpoints** — `/api/v1/lb/{status,groups,records}`,
+   `PUT/DELETE /api/v1/zones/{zone_id}/records/lb/{name}/{type}` (bulk
+   apply/clear `HealthCheck`), `POST /api/v1/lb/probe/{record_id}` (one-shot).
+5. **Dashboard tab** — populate the existing LB tab from `/api/v1/lb/status`
+   and the new WS event.
+6. **WebSocket events** — emit `lb_state_change` on the existing dashboard
+   WS whenever a record flips healthy/unhealthy or failsafe activates.
+7. **Container manifest** — add `securityContext.capabilities.add: [NET_RAW]`
+   to the DaemonSet rendered by mkube.
 
 ## 10. Open questions
 
