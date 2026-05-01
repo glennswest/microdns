@@ -53,6 +53,10 @@ Source: `/Volumes/minihome/gwest/projects/pdnsloadbalancer/`
   cert validation.
 - **TCP** — connect-only check (added later, used in production for
   `api.gw.lo:6443` and `*.apps.gw.lo:80`).
+- **TCP half-open** (microdns-only, no ploadb equivalent) — completes
+  the SYN/SYN-ACK handshake then sends RST instead of FIN. Backend sees
+  no application-level connection. Useful for noisy services that log
+  every connect.
 
 ### 2.3 Probe config storage
 Per-rrset JSON blob stuffed into the **PowerDNS record `comments` field**:

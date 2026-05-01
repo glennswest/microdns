@@ -310,6 +310,9 @@ async fn main() -> Result<()> {
                 "http" => ProbeType::Http,
                 "https" => ProbeType::Https,
                 "tcp" => ProbeType::Tcp,
+                "tcp_half_open" | "tcp-half-open" | "half_open" | "halfopen" => {
+                    ProbeType::TcpHalfOpen
+                }
                 _ => ProbeType::Ping,
             };
             let monitor = microdns_lb::HealthMonitor::with_config(

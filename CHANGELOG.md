@@ -20,6 +20,8 @@
   - `POST /lb/probe/{record_id}` — fire a one-shot probe and return the result (ops/debug)
 - **feat:** Dashboard "Load Balancer" tab populated — pulls from `/lb/{status,groups,records}`. Columns: zone / name / IP / status badge / probe / last-check (with age & stale flag) / probe detail. Failover groups card shows multi-member groups with per-IP dots and a FAILSAFE badge when the group is all-down. ICMP-unavailable banner shown when raw sockets aren't usable
 - **feat:** Dashboard WebSocket emits `LbStateChange` events (status flip / failsafe activation). Events appear in the Events tab and trigger an immediate LB-tab refresh when visible. New `lb` category added to the SSE `/watch` filter
+- **feat:** New `ProbeType::TcpHalfOpen` — completes the SYN/SYN-ACK handshake then sends RST (via `SO_LINGER=0`) instead of a graceful FIN close. Backend sees only the handshake + reset (no application-level connection), prober avoids TIME_WAIT. Useful for high-frequency health checks against services that would otherwise log every probe as a real client. Accepted spelling: `tcp_half_open` in JSON / config (also `tcp-half-open`, `half_open` aliases). `ProbeType` JSON now uses `snake_case` (single-word variants like `ping`/`tcp` unchanged; only `TcpHalfOpen` → `tcp_half_open`)
+- **chore:** k8s manifest — `NET_BIND_SERVICE` + `NET_RAW` capabilities now also set on `deployment-coordinator.yaml` (leaf already had them). Production deploy through mkube tracked in [mkube#12](https://github.com/glennswest/mkube/issues/12)
 
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")

@@ -1453,6 +1453,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "socket2 0.5.10",
  "surge-ping",
  "tempfile",
  "thiserror 2.0.18",

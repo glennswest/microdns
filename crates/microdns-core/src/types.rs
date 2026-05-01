@@ -156,12 +156,21 @@ pub struct HealthCheck {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ProbeType {
     Ping,
     Http,
     Https,
+    /// Full TCP connect + graceful close. Backend sees a normal short-lived
+    /// connection (FIN/ACK).
     Tcp,
+    /// TCP half-open: complete the SYN/SYN-ACK handshake, then send RST
+    /// immediately (SO_LINGER=0) instead of a graceful close. Validates
+    /// that the port is listening without producing an application-level
+    /// connection on the backend, and avoids TIME_WAIT on the prober.
+    /// Useful for high-frequency health checks against services that
+    /// would otherwise log/account every probe as a real client.
+    TcpHalfOpen,
 }
 
 impl std::fmt::Display for ProbeType {
@@ -171,6 +180,7 @@ impl std::fmt::Display for ProbeType {
             ProbeType::Http => write!(f, "http"),
             ProbeType::Https => write!(f, "https"),
             ProbeType::Tcp => write!(f, "tcp"),
+            ProbeType::TcpHalfOpen => write!(f, "tcp_half_open"),
         }
     }
 }
