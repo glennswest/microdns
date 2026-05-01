@@ -376,15 +376,27 @@ input::placeholder { color: var(--text-muted); }
 .lb-ip-row.unknown   { border-left-color: var(--text-muted); }
 .lb-ip-row.failsafe  { border-left-color: var(--orange,#ff9f43); background: rgba(255,159,67,0.10); }
 .lb-tag { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: var(--bg-base); color: var(--text-muted); margin-left: 4px; }
-.lb-log-row {
-  display: grid;
-  grid-template-columns: 65px 1fr;
-  gap: 6px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
+.lb-log-table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 11px;
 }
-.lb-log-row:last-child { border-bottom: none; }
+.lb-log-table th {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+}
+.lb-log-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.lb-log-table tr:last-child td { border-bottom: none; }
 .lb-log-time { color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, monospace; }
 .lb-log-arrow { color: var(--text-muted); margin: 0 4px; }
 .lb-empty { color: var(--text-muted); padding: 20px; text-align: center; }
@@ -1313,6 +1325,23 @@ function fmtAge(secs) {
   return Math.floor(secs/86400) + 'd ago';
 }
 
+// Format a duration as a compact "in this state" value: "3h", "5m", "2d".
+function fmtDuration(secs) {
+  if (secs == null) return '?';
+  if (secs < 0) secs = 0;
+  if (secs < 60)    return secs + 's';
+  if (secs < 3600)  return Math.floor(secs/60) + 'm';
+  if (secs < 86400) return Math.floor(secs/3600) + 'h';
+  return Math.floor(secs/86400) + 'd';
+}
+
+function durationSinceIso(iso) {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (isNaN(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 1000));
+}
+
 function lbStatusBadge(status, failsafe) {
   if (failsafe) return '<span class="badge err">FAILSAFE</span>';
   if (status === 'healthy')   return '<span class="badge ok">Healthy</span>';
@@ -1352,7 +1381,8 @@ async function loadLB() {
       status.icmp_available ? 'none' : '';
 
     // ── Panel 1: Targets tree ─────────────────────────────────────────
-    // Group records by zone → name → IPs
+    // Group records by zone → name → IPs, sorted by zone/host/IP.
+    // Per-IP: probe-type tag, status badge, "in this state for Xh ↑/↓" line.
     const tree = {};
     records.forEach(r => {
       if (!tree[r.zone_name]) tree[r.zone_name] = {};
@@ -1374,9 +1404,16 @@ async function loadLB() {
                         : r.status === 'unhealthy' ? 'unhealthy'
                         : 'unknown';
               const failsafe = cls === 'failsafe';
+              const inStateSecs = durationSinceIso(r.last_state_change_at);
+              const arrow = r.status === 'healthy' ? '↑' : r.status === 'unhealthy' ? '↓' : '·';
+              const arrowColor = r.status === 'healthy' ? 'var(--green)'
+                              : r.status === 'unhealthy' ? 'var(--red)'
+                              : 'var(--text-muted)';
+              const inStateTxt = inStateSecs == null ? '' :
+                ` <span style="color:var(--text-muted);font-size:10px">${fmtDuration(inStateSecs)} <span style="color:${arrowColor};font-weight:700">${arrow}</span></span>`;
               return `<div class="lb-ip-row ${cls}">
                 <span>${esc(r.ip)}<span class="lb-tag">${esc(r.probe_type)}</span></span>
-                <span>${lbStatusBadge(r.status, failsafe)}</span>
+                <span>${lbStatusBadge(r.status, failsafe)}${inStateTxt}</span>
               </div>`;
             }).join('');
           }).join('');
@@ -1384,6 +1421,9 @@ async function loadLB() {
     document.getElementById('lb-targets-body').innerHTML = targetsHtml;
 
     // ── Panel 2: DNS Resolution ───────────────────────────────────────
+    // Per FQDN: which IPs the authoritative server returns right now,
+    // with TTL per answer. (microdns auth reads directly from redb;
+    // there's no separate auth-vs-recursor cache to query.)
     const resolutionsHtml = resolutions.length === 0
       ? '<div class="lb-empty">No load-balanced names</div>'
       : resolutions.map(r => {
@@ -1391,42 +1431,54 @@ async function loadLB() {
           const hasFailsafe = r.answers.some(a => a.failsafe);
           const summary = `${enabled}/${r.total_members} returned${hasFailsafe?' (failsafe)':''}`;
           if (enabled === 0) {
-            return `<div class="lb-zone-name">${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span></div>
+            return `<div class="lb-zone-name">🔍 ${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span></div>
               <div class="lb-empty" style="padding:6px 0;text-align:left;font-size:11px">NODATA — every member disabled</div>`;
           }
-          return `<div class="lb-zone-name">${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span> <span class="lb-tag" style="float:right">${summary}</span></div>` +
+          return `<div class="lb-zone-name">🔍 ${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span> <span class="lb-tag" style="float:right">${summary}</span></div>` +
             r.answers.map(a => {
               const cls = a.failsafe ? 'failsafe' : a.status === 'healthy' ? 'healthy' : 'unhealthy';
               return `<div class="lb-ip-row ${cls}">
-                <span>${esc(a.ip)}</span>
-                <span>${a.failsafe ? '<span class="badge err" style="font-size:9px">FAILSAFE</span>' : '<span class="badge ok" style="font-size:9px">RETURNED</span>'}</span>
+                <span>🌐 ${esc(a.ip)}</span>
+                <span>
+                  <span class="lb-tag" title="record TTL">TTL ${a.ttl}s</span>
+                  ${a.failsafe ? '<span class="badge err" style="font-size:9px">FAILSAFE</span>' : '<span class="badge ok" style="font-size:9px">RETURNED</span>'}
+                </span>
               </div>`;
             }).join('');
         }).join('');
     document.getElementById('lb-resolutions-body').innerHTML = resolutionsHtml;
 
     // ── Panel 3: Status Change Log ────────────────────────────────────
-    const logHtml = log.length === 0
-      ? '<div class="lb-empty">No state changes recorded</div>'
-      : log.map(e => {
-          const t = new Date(e.at);
-          const tStr = t.toLocaleTimeString();
-          const prev = e.previous_status || 'unknown';
-          const next = e.status;
-          const prevCls = lbStatusColor(prev);
-          const nextCls = lbStatusColor(next);
-          const failsafeTag = e.failsafe ? ' <span class="badge err" style="font-size:9px">failsafe</span>' : '';
-          return `<div class="lb-log-row">
-            <span class="lb-log-time">${esc(tStr)}</span>
-            <div>
-              <span class="mono" style="font-weight:600">${esc(e.fqdn)}</span> ${esc(e.ip)}<br>
-              <span style="color:${prevCls}">${esc(prev)}</span><span class="lb-log-arrow">→</span><span style="color:${nextCls}">${esc(next)}</span>${failsafeTag}
-              <span class="lb-tag">${esc(e.probe_type)}</span>
-              <div style="color:var(--text-muted);font-size:10px">${esc((e.detail||'').slice(0,80))}</div>
-            </div>
-          </div>`;
-        }).join('');
-    document.getElementById('lb-log-body').innerHTML = logHtml;
+    // Columns mirror ploadb: Time / Hostname / IP / Change / Probe.
+    if (log.length === 0) {
+      document.getElementById('lb-log-body').innerHTML =
+        '<div class="lb-empty">No state changes recorded</div>';
+    } else {
+      const rows = log.map(e => {
+        const t = new Date(e.at);
+        const tStr = t.toLocaleString();
+        const prev = e.previous_status || 'unknown';
+        const next = e.status;
+        const prevCls = lbStatusColor(prev);
+        const nextCls = lbStatusColor(next);
+        const failsafeTag = e.failsafe ? ' <span class="badge err" style="font-size:9px">FS</span>' : '';
+        const detail = (e.detail || '').slice(0, 60);
+        return `<tr>
+          <td class="lb-log-time" style="white-space:nowrap">${esc(tStr)}</td>
+          <td class="mono">${esc(e.fqdn)}</td>
+          <td class="mono">${esc(e.ip)}</td>
+          <td>
+            <span style="color:${prevCls}">${esc(prev)}</span><span class="lb-log-arrow">→</span><span style="color:${nextCls}">${esc(next)}</span>${failsafeTag}
+            ${detail ? `<div style="color:var(--text-muted);font-size:10px;margin-top:2px">${esc(detail)}</div>` : ''}
+          </td>
+          <td><span class="lb-tag">${esc(e.probe_type)}</span></td>
+        </tr>`;
+      }).join('');
+      document.getElementById('lb-log-body').innerHTML = `<table class="lb-log-table">
+        <thead><tr><th>Time</th><th>Hostname</th><th>IP</th><th>Change</th><th>Probe</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
   } catch(e) {
     document.getElementById('lb-targets-body').innerHTML = `<div class="lb-empty">Error: ${esc(e.message)}</div>`;
     document.getElementById('lb-resolutions-body').innerHTML = '';

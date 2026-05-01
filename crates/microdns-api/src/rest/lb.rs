@@ -391,6 +391,8 @@ struct ResolutionAnswer {
     status: HealthStatus,
     /// True if this answer is being returned only because of failsafe.
     failsafe: bool,
+    /// Record TTL in seconds — what clients will cache the answer for.
+    ttl: u32,
 }
 
 async fn lb_resolutions(
@@ -408,7 +410,7 @@ async fn lb_resolutions(
     type GroupKey = (Uuid, String, String);
     #[derive(Default)]
     struct GroupAcc {
-        members: Vec<(String, HealthStatus, bool)>, // ip, status, enabled
+        members: Vec<(String, HealthStatus, bool, u32)>, // ip, status, enabled, ttl
     }
     let mut groups: HashMap<GroupKey, GroupAcc> = HashMap::new();
 
@@ -416,22 +418,16 @@ async fn lb_resolutions(
     for (id, h) in snap.iter() {
         let key = (h.zone_id, h.record_name.clone(), h.record_type.clone());
         let entry = groups.entry(key).or_default();
-        let ip = match state.db.get_record(id) {
-            Ok(Some(r)) => match r.data {
-                RecordData::A(a) => a.to_string(),
-                RecordData::AAAA(a) => a.to_string(),
-                _ => continue,
-            },
+        let rec = match state.db.get_record(id) {
+            Ok(Some(r)) => r,
             _ => continue,
         };
-        let enabled = state
-            .db
-            .get_record(id)
-            .ok()
-            .flatten()
-            .map(|r| r.enabled)
-            .unwrap_or(true);
-        entry.members.push((ip, h.status, enabled));
+        let ip = match rec.data {
+            RecordData::A(a) => a.to_string(),
+            RecordData::AAAA(a) => a.to_string(),
+            _ => continue,
+        };
+        entry.members.push((ip, h.status, rec.enabled, rec.ttl));
     }
     drop(snap);
 
@@ -443,11 +439,11 @@ async fn lb_resolutions(
         let any_unhealthy_enabled = acc
             .members
             .iter()
-            .any(|(_, s, en)| *en && matches!(s, HealthStatus::Unhealthy));
+            .any(|(_, s, en, _)| *en && matches!(s, HealthStatus::Unhealthy));
         let answers: Vec<ResolutionAnswer> = acc
             .members
             .into_iter()
-            .filter_map(|(ip, status, enabled)| {
+            .filter_map(|(ip, status, enabled, ttl)| {
                 if !enabled {
                     return None;
                 }
@@ -456,6 +452,7 @@ async fn lb_resolutions(
                     ip,
                     status,
                     failsafe,
+                    ttl,
                 })
             })
             .collect();

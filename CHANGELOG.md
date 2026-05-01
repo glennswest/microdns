@@ -24,7 +24,7 @@
 - **feat:** State-change ring buffer — last 200 transitions kept in memory with old/new status, surfaced via `GET /api/v1/lb/log`
 - **feat:** Live-resolution endpoint — `GET /api/v1/lb/resolutions` returns, per `(zone, name, type)`, the IPs the authoritative server would currently return (members with `enabled=true`), with a `failsafe` flag on entries that are only included because the group is all-down
 - **feat:** Debug endpoint — `GET /api/v1/lb/debug` raw dump of in-memory `HealthState` + persisted rows, ICMP availability, and half-open watcher count. Equivalent of ploadb's `/debug`
-- **feat:** Dashboard LB tab redesigned to match ploadb's three real-time panels: **Load Balanced Targets** (tree of zones → hostnames → IPs with status), **Current DNS Resolution** (which IPs each FQDN actually returns right now, with failsafe markers), **Status Change Log** (timeline of healthy↔unhealthy flips with old → new). Stat cards stay at the top; ICMP-unavailable banner above the panels
+- **feat:** Dashboard LB tab redesigned to match ploadb's three real-time panels: **Load Balanced Targets** (tree of zones → hostnames → IPs with status, probe type, and "in-this-state-for Xh ↑/↓" annotation), **Current DNS Resolution** (per-FQDN live answers with TTL per IP and failsafe markers), **Status Change Log** (Time / Hostname / IP / Change / Probe table — same columns as ploadb). Stat cards stay at the top; ICMP-unavailable banner above the panels
 - **chore:** k8s manifest — `NET_BIND_SERVICE` + `NET_RAW` capabilities now also set on `deployment-coordinator.yaml` (leaf already had them). Production deploy through mkube tracked in [mkube#12](https://github.com/glennswest/mkube/issues/12)
 
 ### 2026-04-27
