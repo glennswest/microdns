@@ -8,6 +8,7 @@ pub mod dhcp_routes;
 pub mod dns_forwarders;
 pub mod health;
 pub mod ipam;
+pub mod lb;
 pub mod leases;
 pub mod logs;
 pub mod records;
@@ -33,5 +34,6 @@ pub fn router() -> Router<AppState> {
         .merge(dhcp_routes::router())
         .merge(dhcp_config::router())
         .merge(dns_forwarders::router())
+        .merge(lb::router())
         .merge(watch::router())
 }

@@ -11,6 +11,13 @@
 - **feat:** LB last-alive failsafe — when every member of a `(zone, name, type)` group is `Unhealthy`, the member with the most recent `last_healthy_at` is force-enabled (deterministic, replaces previous HashMap-order pick). Failsafe state-change events are emitted with `failsafe=true`
 - **feat:** Real ICMP ping via `surge-ping` — uses raw ICMP sockets when `CAP_NET_RAW` is available; logs a single warning and falls back to the TCP-reachability stand-in when not. Configurable `ping_packet_count` (default 3, matches ploadb)
 - **feat:** New `MonitorConfig` with `probe_concurrency`, `ping_packet_count`, `default_timeout_secs` knobs in `[dns.loadbalancer]`. New `LbHandles` exposes monitor state + state-change broadcast to the API server (`ApiServer::with_lb`)
+- **feat:** LB REST API at `/api/v1/lb/*`:
+  - `GET /lb/status` — overall counts + ICMP availability + last-cycle window
+  - `GET /lb/groups` — per `(zone, name, type)` summary with member/healthy counts and failsafe flag
+  - `GET /lb/records` — per-record health rows including `last_checked_at`, `stale` flag, and `age_seconds`
+  - `PUT /zones/{zone_id}/records/lb/{name}/{type}` — bulk apply a `HealthCheck` blob to every member of a name
+  - `DELETE /zones/{zone_id}/records/lb/{name}/{type}` — bulk clear `HealthCheck` from every member
+  - `POST /lb/probe/{record_id}` — fire a one-shot probe and return the result (ops/debug)
 
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")
