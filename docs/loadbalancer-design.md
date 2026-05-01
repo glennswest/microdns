@@ -13,9 +13,14 @@ Date: 2026-05-01
   from `(zone_id, name, record_type)` (already implemented in `state.rs`).
 - **Real ICMP via `surge-ping`**: yes. DaemonSet gets `NET_RAW`. TCP fallback
   with one-time warning if the capability isn't available.
-- **No persistence of runtime health state**: confirmed. Records start
-  `Unknown`, stay enabled, get reprobed within `check_interval_secs` after
-  startup.
+- **Persist runtime health state** (revised 2026-05-01): a quick restart
+  shouldn't lose context. Health rows are persisted to a new redb table
+  `lb_record_health` keyed by `record_id` and reloaded into `HealthState`
+  on startup. Every persisted row records `last_checked_at` so callers
+  (dashboard / REST) can see how stale the data is — anything older than
+  `2 × check_interval_secs` is rendered as "stale" until the next probe
+  cycle refreshes it. Persistence is a single batched redb txn per probe
+  cycle, not per probe.
 - **One umbrella PR / one umbrella issue** (not 8 separate ones).
 - **LB dashboard**: build it (populate the existing tab shell + WS
   `lb_state_change` events).
@@ -210,11 +215,52 @@ zone / name / IP / status badge / probe type / last-check / detail.
 
 ## 6. Storage
 
-No schema changes. Probe config stays in `Record.health_check: Option<HealthCheck>`
-on each row, exactly as today. `HealthState` stays in-memory: after restart,
-every record starts `Unknown` and is reprobed within `check_interval_secs`.
-The durable artifact is the `enabled` bit on the record, which is what query
-responses already filter on.
+### 6.1 Probe config — unchanged
+
+Probe config stays in `Record.health_check: Option<HealthCheck>` on each
+record row. No schema change for config.
+
+### 6.2 New `lb_record_health` redb table — persisted health state
+
+Keyed by `record_id` (UUID), value is JSON-serialized `PersistedHealth`:
+
+```rust
+struct PersistedHealth {
+    healthy: HealthStatus,            // Unknown | Healthy | Unhealthy
+    last_checked_at: DateTime<Utc>,
+    last_state_change_at: DateTime<Utc>,
+    last_healthy_at: Option<DateTime<Utc>>,
+    last_probe_detail: String,
+    last_probe_type: ProbeType,
+    consecutive_successes: u32,
+    consecutive_failures: u32,
+}
+```
+
+**Lifecycle**:
+- **Startup**: read the whole table, hydrate `HealthState` with rows whose
+  matching record still exists (drop orphans). Records that have a
+  `health_check` configured but no persisted row register as `Unknown`.
+- **End of every probe cycle**: one batched redb write transaction
+  upserting every row that was probed this cycle. Cheap — redb is
+  memory-mapped, and we expect O(tens) of LB records per instance.
+- **State change**: bumps `last_state_change_at`; the WS event and
+  dashboard surface this.
+- **Record deleted via REST**: also delete the matching `lb_record_health`
+  row (in the same transaction as the record delete).
+
+### 6.3 Staleness UX
+
+Every persisted row carries `last_checked_at`. The dashboard and REST
+endpoints classify each record as:
+- **fresh** — `now − last_checked_at ≤ 2 × check_interval_secs`
+- **stale** — older than that (rendered with a warning indicator and the
+  age in human-readable form)
+
+On a fresh container start, every row is briefly stale; the first probe
+cycle (within `check_interval_secs`) refreshes it. The `enabled` bit
+stays as it was — clients keep getting the previously-known-good answers
+during the warm-up window.
 
 ## 7. Config (`config.toml`)
 
@@ -248,6 +294,9 @@ sanity but landed together:
 1. **Two-pass cycle + parallel probes** — refactor `monitor.rs`. Add
    `last_checked_at`, `last_state_change_at`, `last_probe_detail`,
    `last_healthy_at` to `RecordHealth`. Initial state = `Unknown`.
+   At end of each cycle, persist `HealthState` to the new
+   `lb_record_health` redb table in one batched txn. On startup, hydrate
+   `HealthState` from that table.
 2. **Last-alive failsafe** — pick member with most recent `last_healthy_at`
    (deterministic, matches ploadb v2.2).
 3. **Real ICMP** — add `surge-ping` to `microdns-lb`. Detect missing
