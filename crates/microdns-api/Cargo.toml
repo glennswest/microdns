@@ -9,6 +9,7 @@ microdns-auth.workspace = true
 microdns-recursor.workspace = true
 microdns-federation.workspace = true
 microdns-msg.workspace = true
+microdns-lb.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tonic.workspace = true

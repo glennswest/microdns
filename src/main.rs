@@ -302,6 +302,7 @@ async fn main() -> Result<()> {
     }
 
     // Start load balancer health monitor
+    let mut lb_handles: Option<microdns_api::LbHandles> = None;
     if let Some(ref lb_config) = config.dns.loadbalancer {
         if lb_config.enabled {
             use microdns_core::types::ProbeType;
@@ -311,11 +312,24 @@ async fn main() -> Result<()> {
                 "tcp" => ProbeType::Tcp,
                 _ => ProbeType::Ping,
             };
-            let monitor = microdns_lb::HealthMonitor::new(
+            let monitor = microdns_lb::HealthMonitor::with_config(
                 db.clone(),
-                std::time::Duration::from_secs(lb_config.check_interval_secs),
-                default_probe,
+                microdns_lb::MonitorConfig {
+                    check_interval: std::time::Duration::from_secs(lb_config.check_interval_secs),
+                    default_probe,
+                    default_timeout: std::time::Duration::from_secs(
+                        u64::from(lb_config.default_timeout_secs),
+                    ),
+                    probe_concurrency: lb_config.probe_concurrency.max(1),
+                    ping_packet_count: lb_config.ping_packet_count.max(1),
+                },
             );
+            lb_handles = Some(microdns_api::LbHandles {
+                state: monitor.state(),
+                events: monitor.events(),
+                check_interval_secs: lb_config.check_interval_secs,
+                default_probe,
+            });
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = monitor.run(rx).await {
@@ -509,6 +523,10 @@ async fn main() -> Result<()> {
 
             if config.instance.mode == InstanceMode::Coordinator {
                 api = api.with_heartbeat_tracker(heartbeat_tracker.clone());
+            }
+
+            if let Some(handles) = lb_handles.take() {
+                api = api.with_lb(handles);
             }
 
             // Bridge DHCP lease events to dashboard

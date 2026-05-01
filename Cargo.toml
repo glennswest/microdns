@@ -68,6 +68,11 @@ anyhow = "1"
 # Async
 async-trait = "0.1"
 tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+
+# ICMP ping
+surge-ping = "0.8"
+rand = "0.8"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

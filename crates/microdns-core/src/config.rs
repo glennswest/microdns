@@ -96,6 +96,18 @@ pub struct DnsLbConfig {
     pub check_interval_secs: u64,
     #[serde(default = "default_probe_type")]
     pub default_probe: String,
+    /// Max in-flight probes per cycle. Caps fan-out for hosts with many
+    /// monitored records.
+    #[serde(default = "default_probe_concurrency")]
+    pub probe_concurrency: usize,
+    /// Number of ICMP echo packets per ping probe. Probe is healthy if
+    /// any echo replies. Matches ploadb's default of 3.
+    #[serde(default = "default_ping_packet_count")]
+    pub ping_packet_count: u8,
+    /// Default per-probe timeout (seconds) when a HealthCheck doesn't set
+    /// one explicitly.
+    #[serde(default = "default_probe_timeout")]
+    pub default_timeout_secs: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +397,15 @@ fn default_check_interval() -> u64 {
 fn default_probe_type() -> String {
     "ping".to_string()
 }
+fn default_probe_concurrency() -> usize {
+    32
+}
+fn default_ping_packet_count() -> u8 {
+    3
+}
+fn default_probe_timeout() -> u32 {
+    5
+}
 fn default_lease_time() -> u64 {
     3600
 }
@@ -512,6 +533,9 @@ cache_size = 10000
 enabled = true
 check_interval_secs = 10
 default_probe = "ping"
+probe_concurrency = 32
+ping_packet_count = 3
+default_timeout_secs = 5
 
 [api.rest]
 enabled = true

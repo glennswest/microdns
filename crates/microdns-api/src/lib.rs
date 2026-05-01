@@ -12,14 +12,16 @@ use tower_http::cors::{Any, CorsLayer};
 use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
+use microdns_core::types::ProbeType;
 use microdns_federation::heartbeat::HeartbeatTracker;
+use microdns_lb::{HealthState, StateChange};
 use microdns_msg::MessageBus;
 use microdns_recursor::cache::DnsCache;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, Mutex};
 use tracing::info;
 
 pub use rest::dhcp::DhcpStatusConfig;
@@ -44,6 +46,18 @@ pub struct ApiServer {
     message_bus: Option<Arc<dyn MessageBus>>,
     event_tx: broadcast::Sender<DashboardEvent>,
     recursor_cache: Option<Arc<DnsCache>>,
+    lb: Option<LbHandles>,
+}
+
+/// Hooks the API needs to surface load-balancer state and emit/receive
+/// state-change events. Wired up by the binary when the LB monitor is
+/// running.
+#[derive(Clone)]
+pub struct LbHandles {
+    pub state: Arc<Mutex<HealthState>>,
+    pub events: broadcast::Sender<StateChange>,
+    pub check_interval_secs: u64,
+    pub default_probe: ProbeType,
 }
 
 /// Dashboard event for real-time UI updates via broadcast channel
@@ -73,6 +87,7 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<DashboardEvent>,
     pub recursor_cache: Option<Arc<DnsCache>>,
     pub started_at: Instant,
+    pub lb: Option<LbHandles>,
 }
 
 impl ApiServer {
@@ -92,7 +107,13 @@ impl ApiServer {
             message_bus: None,
             event_tx,
             recursor_cache: None,
+            lb: None,
         }
+    }
+
+    pub fn with_lb(mut self, handles: LbHandles) -> Self {
+        self.lb = Some(handles);
+        self
     }
 
     pub fn with_recursor_cache(mut self, cache: Arc<DnsCache>) -> Self {
@@ -163,6 +184,7 @@ impl ApiServer {
             event_tx: self.event_tx,
             recursor_cache: self.recursor_cache,
             started_at: Instant::now(),
+            lb: self.lb,
         };
 
         // API router: /api/v1 routes with body limit + api_key auth + CORS

@@ -12,17 +12,19 @@ pub struct ProbeResult {
     pub detail: String,
 }
 
-/// Execute a health check probe against a target IP.
+/// Execute a health check probe against a target IP. `ping_count` is the
+/// number of ICMP echos to send for ping probes (ignored otherwise).
 pub async fn run_probe(
     probe_type: ProbeType,
     target: IpAddr,
     timeout: Duration,
     endpoint: Option<&str>,
+    ping_count: u8,
 ) -> ProbeResult {
     let start = std::time::Instant::now();
 
     let result = match probe_type {
-        ProbeType::Ping => ping_probe(target, timeout).await,
+        ProbeType::Ping => ping_probe(target, timeout, ping_count).await,
         ProbeType::Http => http_probe(target, false, timeout, endpoint).await,
         ProbeType::Https => http_probe(target, true, timeout, endpoint).await,
         ProbeType::Tcp => tcp_probe(target, timeout, endpoint).await,
@@ -50,10 +52,14 @@ pub async fn run_probe(
     }
 }
 
-/// ICMP ping probe - uses TCP connect to port 7 as a fallback since raw sockets
-/// require privileges. In production with NET_RAW capability, this could use
-/// actual ICMP. For now we use a TCP connect to a common port as a reachability check.
-async fn ping_probe(target: IpAddr, timeout: Duration) -> Result<String, String> {
+/// Ping probe. With CAP_NET_RAW we use real ICMP via `surge_ping` (see
+/// `icmp_probe` in `icmp.rs`). Without it we fall back to a TCP-reachability
+/// stand-in: try TCP/80, then TCP/443. A connection-refused on either is
+/// treated as "host reachable" since it proves the IP stack responded.
+async fn ping_probe(target: IpAddr, timeout: Duration, count: u8) -> Result<String, String> {
+    if let Some(result) = crate::icmp::probe_if_available(target, timeout, count).await {
+        return result;
+    }
     // Try TCP connect to port 80 as a reachability check
     // Real ICMP requires raw sockets / CAP_NET_RAW
     let addr = SocketAddr::new(target, 80);
