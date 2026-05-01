@@ -32,6 +32,7 @@ fn matches_filter(event: &DashboardEvent, filters: &[String]) -> bool {
         DashboardEvent::LeaseChanged { .. } => "leases",
         DashboardEvent::ZoneChanged { .. } => "zones",
         DashboardEvent::RecordChanged { .. } => "records",
+        DashboardEvent::LbStateChange { .. } => "lb",
     };
     filters.iter().any(|f| f == category)
 }

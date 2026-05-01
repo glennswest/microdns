@@ -18,6 +18,8 @@
   - `PUT /zones/{zone_id}/records/lb/{name}/{type}` — bulk apply a `HealthCheck` blob to every member of a name
   - `DELETE /zones/{zone_id}/records/lb/{name}/{type}` — bulk clear `HealthCheck` from every member
   - `POST /lb/probe/{record_id}` — fire a one-shot probe and return the result (ops/debug)
+- **feat:** Dashboard "Load Balancer" tab populated — pulls from `/lb/{status,groups,records}`. Columns: zone / name / IP / status badge / probe / last-check (with age & stale flag) / probe detail. Failover groups card shows multi-member groups with per-IP dots and a FAILSAFE badge when the group is all-down. ICMP-unavailable banner shown when raw sockets aren't usable
+- **feat:** Dashboard WebSocket emits `LbStateChange` events (status flip / failsafe activation). Events appear in the Events tab and trigger an immediate LB-tab refresh when visible. New `lb` category added to the SSE `/watch` filter
 
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")

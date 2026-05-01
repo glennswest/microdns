@@ -561,9 +561,16 @@ input::placeholder { color: var(--text-muted); }
   <div class="card">
     <div class="card-title" style="margin-bottom:10px">All Records</div>
     <table>
-      <thead><tr><th>Zone</th><th>Name</th><th>Type</th><th>Target</th><th>Probe</th><th>Interval</th><th>Thresholds</th><th>Status</th></tr></thead>
+      <thead><tr><th>Zone</th><th>Name</th><th>IP</th><th>Status</th><th>Probe</th><th>Last check</th><th>Detail</th></tr></thead>
       <tbody id="lb-records-table"></tbody>
     </table>
+  </div>
+  <div class="card" id="lb-icmp-warning" style="display:none;margin-top:10px;border-left:3px solid var(--orange,#ff9f43)">
+    <div class="card-title" style="margin-bottom:6px">ICMP unavailable</div>
+    <div style="font-size:12px;color:var(--text-muted)">
+      Real ICMP could not be initialized on this instance (no <code>CAP_NET_RAW</code>?).
+      Ping probes are falling back to TCP-reachability stand-in.
+    </div>
   </div>
 </div>
 
@@ -635,6 +642,7 @@ input::placeholder { color: var(--text-muted); }
         <option value="LeaseChanged">Leases</option>
         <option value="ZoneChanged">Zones</option>
         <option value="RecordChanged">Records</option>
+        <option value="LbStateChange">LB State</option>
       </select>
       <button class="btn btn-ghost btn-sm" onclick="clearEvents()">Clear</button>
       <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-secondary)">
@@ -980,6 +988,14 @@ function handleEvent(event) {
   if (document.getElementById('tab-events').classList.contains('active')) {
     renderEvents();
   }
+
+  // LB tab: refresh on any LB state change so the badge / staleness updates
+  // without waiting for the next 10 s poll.
+  if (event.type === 'LbStateChange'
+      && document.getElementById('tab-lb')
+      && document.getElementById('tab-lb').classList.contains('active')) {
+    loadLB();
+  }
 }
 
 // ─── Overview ───
@@ -1227,49 +1243,74 @@ async function saveEditRecord(id, type) {
 
 // ─── Load Balancer ───
 
+function fmtAge(secs) {
+  if (secs == null) return 'never';
+  if (secs < 0) secs = 0;
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+  if (secs < 86400) return Math.floor(secs/3600) + 'h ago';
+  return Math.floor(secs/86400) + 'd ago';
+}
+
+function lbStatusBadge(status, failsafe) {
+  if (failsafe) return '<span class="badge err">FAILSAFE</span>';
+  if (status === 'healthy')   return '<span class="badge ok">Healthy</span>';
+  if (status === 'unhealthy') return '<span class="badge err">Unhealthy</span>';
+  return '<span class="badge info">Unknown</span>';
+}
+
 async function loadLB() {
   try {
-    const zones = wsData.zones || [];
-    const allRecs = [];
-    await Promise.all(zones.map(async z => {
-      try {
-        const recs = await apiFetch(`/zones/${z.id}/records?limit=500`);
-        recs.forEach(r => { r._zoneName = z.name; r._zoneId = z.id; });
-        allRecs.push(...recs);
-      } catch(e) {}
-    }));
+    const [status, groups, records] = await Promise.all([
+      apiFetch('/lb/status'),
+      apiFetch('/lb/groups'),
+      apiFetch('/lb/records'),
+    ]);
 
-    const hcRecs = allRecs.filter(r => r.health_check);
-    const healthy = hcRecs.filter(r => r.enabled).length;
-    const unhealthy = hcRecs.length - healthy;
+    if (!status.enabled) {
+      document.getElementById('lb-total').textContent = '-';
+      document.getElementById('lb-healthy').textContent = '-';
+      document.getElementById('lb-unhealthy').textContent = '-';
+      document.getElementById('lb-groups').textContent = '-';
+      document.getElementById('lb-records-table').innerHTML =
+        '<tr><td colspan="7" style="color:var(--text-muted)">Load balancer disabled</td></tr>';
+      document.getElementById('lb-groups-card').style.display = 'none';
+      document.getElementById('lb-icmp-warning').style.display = 'none';
+      return;
+    }
 
-    const groupMap = {};
-    hcRecs.forEach(r => {
-      const key = `${r._zoneId}|${r.name}|${r.type}`;
-      if (!groupMap[key]) groupMap[key] = {zone:r._zoneName, name:r.name, type:r.type, records:[]};
-      groupMap[key].records.push(r);
-    });
-    const groups = Object.values(groupMap).filter(g => g.records.length >= 2);
+    document.getElementById('lb-total').textContent = status.aggregate.total;
+    document.getElementById('lb-healthy').textContent = status.aggregate.healthy;
+    document.getElementById('lb-unhealthy').textContent = status.aggregate.unhealthy;
+    document.getElementById('lb-groups').textContent = status.aggregate.groups;
+    document.getElementById('lb-icmp-warning').style.display =
+      status.icmp_available ? 'none' : '';
 
-    document.getElementById('lb-total').textContent = hcRecs.length;
-    document.getElementById('lb-healthy').textContent = healthy;
-    document.getElementById('lb-unhealthy').textContent = unhealthy;
-    document.getElementById('lb-groups').textContent = groups.length;
-
-    if (groups.length > 0) {
+    // Groups card — only show multi-member groups.
+    const multi = groups.filter(g => g.members >= 2);
+    if (multi.length > 0) {
       document.getElementById('lb-groups-card').style.display = '';
-      document.getElementById('lb-groups-body').innerHTML = groups.map(g => {
-        const allDown = g.records.every(r => !r.enabled);
+      // Build a name → records map so we can list IPs under each group row.
+      const byKey = {};
+      records.forEach(r => {
+        const key = `${r.zone_id}|${r.name}|${r.record_type}`;
+        if (!byKey[key]) byKey[key] = [];
+        byKey[key].push(r);
+      });
+      document.getElementById('lb-groups-body').innerHTML = multi.map(g => {
+        const key = `${g.zone_id}|${g.name}|${g.record_type}`;
+        const recs = byKey[key] || [];
         return `<div style="margin-bottom:10px;padding:8px;background:var(--bg-base);border-radius:4px">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-            <span class="mono" style="font-weight:600">${esc(g.name)}.${esc(g.zone)}</span>
-            <span class="badge info">${esc(g.type)}</span>
-            ${allDown ? '<span class="badge err">FAILSAFE</span>' : ''}
+            <span class="mono" style="font-weight:600">${esc(g.fqdn)}</span>
+            <span class="badge info">${esc(g.record_type)}</span>
+            <span style="font-size:11px;color:var(--text-muted)">${g.healthy}/${g.members} healthy</span>
+            ${g.failsafe_active ? '<span class="badge err">FAILSAFE</span>' : ''}
           </div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">${g.records.map(r =>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">${recs.map(r =>
             `<div style="display:flex;align-items:center;gap:4px;font-size:11px">
-              <span class="dot ${r.enabled?'green':'red'}"></span>
-              <span class="mono">${esc(fmtRecordData(r.data))}</span>
+              <span class="dot ${r.status==='healthy'?'green':r.status==='unhealthy'?'red':'gray'}"></span>
+              <span class="mono">${esc(r.ip)}</span>
             </div>`
           ).join('')}</div>
         </div>`;
@@ -1278,21 +1319,26 @@ async function loadLB() {
       document.getElementById('lb-groups-card').style.display = 'none';
     }
 
-    document.getElementById('lb-records-table').innerHTML = hcRecs.map(r => {
-      const hc = r.health_check;
+    // Records table
+    document.getElementById('lb-records-table').innerHTML = records.map(r => {
+      const ageTxt = r.last_checked_at
+        ? fmtAge(r.age_seconds)
+        : '<span style="color:var(--text-muted)">never</span>';
+      const staleStyle = r.stale ? 'color:var(--orange,#ff9f43);' : '';
+      // failsafe: enabled==true AND status==unhealthy (group has all-down)
+      const failsafe = r.enabled && r.status === 'unhealthy';
       return `<tr>
-        <td class="mono">${esc(r._zoneName)}</td>
+        <td class="mono">${esc(r.zone_name)}</td>
         <td class="mono">${esc(r.name)}</td>
-        <td><span class="badge info">${esc(r.type)}</span></td>
-        <td class="mono">${esc(fmtRecordData(r.data))}</td>
-        <td>${esc(hc.probe_type)}</td>
-        <td>${hc.interval_secs}s</td>
-        <td style="font-size:10px;color:var(--text-muted)">${hc.healthy_threshold}/${hc.unhealthy_threshold}</td>
-        <td><span class="badge ${r.enabled?'ok':'err'}">${r.enabled?'Healthy':'Down'}</span></td>
+        <td class="mono">${esc(r.ip)}</td>
+        <td>${lbStatusBadge(r.status, failsafe)}</td>
+        <td>${esc(r.probe_type)}</td>
+        <td style="${staleStyle}font-size:11px">${ageTxt}${r.stale?' <span class="badge err" style="font-size:9px">stale</span>':''}</td>
+        <td style="font-size:11px;color:var(--text-muted)" title="${esc(r.last_probe_detail)}">${esc((r.last_probe_detail||'').slice(0,40))}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" style="color:var(--text-muted)">No health-checked records</td></tr>';
+    }).join('') || '<tr><td colspan="7" style="color:var(--text-muted)">No health-checked records</td></tr>';
   } catch(e) {
-    document.getElementById('lb-records-table').innerHTML = `<tr><td colspan="8" style="color:var(--text-muted)">Error: ${esc(e.message)}</td></tr>`;
+    document.getElementById('lb-records-table').innerHTML = `<tr><td colspan="7" style="color:var(--text-muted)">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1576,6 +1622,11 @@ function renderEvents() {
       case 'LeaseChanged': detail = `${esc(e.ip)} (${esc(e.mac)})`; break;
       case 'ZoneChanged': detail = `Zone: ${esc(e.zone_name||e.zone_id)}`; break;
       case 'RecordChanged': detail = `Record: ${esc(e.record_name)} in ${esc(e.zone_id)}`; break;
+      case 'LbStateChange': {
+        const fs = e.failsafe ? ' (failsafe)' : '';
+        detail = `${esc(e.name)}.${esc(e.zone_name)} ${esc(e.ip)} → ${esc(e.status)}${fs} <span style="color:var(--text-muted)">[${esc(e.probe_type)}: ${esc(e.detail||'')}]</span>`;
+        break;
+      }
       default: detail = JSON.stringify(e);
     }
     return `<div class="event-item">

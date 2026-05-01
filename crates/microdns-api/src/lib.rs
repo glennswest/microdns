@@ -70,6 +70,21 @@ pub enum DashboardEvent {
     LeaseChanged { action: String, ip: String, mac: String },
     ZoneChanged { action: String, zone_id: String, zone_name: String },
     RecordChanged { action: String, zone_id: String, record_name: String },
+    /// Load-balancer state-change. Emitted whenever a record's HealthStatus
+    /// flips, or whenever failsafe activates on a record.
+    LbStateChange {
+        record_id: String,
+        zone_id: String,
+        zone_name: String,
+        name: String,
+        ip: String,
+        record_type: String,
+        status: String,
+        failsafe: bool,
+        probe_type: String,
+        detail: String,
+        at: String,
+    },
 }
 
 #[derive(Clone)]
@@ -186,6 +201,44 @@ impl ApiServer {
             started_at: Instant::now(),
             lb: self.lb,
         };
+
+        // Bridge LB state-changes onto the dashboard broadcast so the
+        // existing WS multiplexer carries them too.
+        if let Some(lb) = state.lb.clone() {
+            let dashboard_tx = state.event_tx.clone();
+            let mut lb_rx = lb.events.subscribe();
+            let mut bridge_shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        result = lb_rx.recv() => {
+                            match result {
+                                Ok(change) => {
+                                    let _ = dashboard_tx.send(DashboardEvent::LbStateChange {
+                                        record_id: change.record_id.to_string(),
+                                        zone_id: change.zone_id.to_string(),
+                                        zone_name: change.zone_name,
+                                        name: change.name,
+                                        ip: change.ip,
+                                        record_type: change.record_type,
+                                        status: change.status.to_string(),
+                                        failsafe: change.failsafe,
+                                        probe_type: change.probe_type.to_string(),
+                                        detail: change.detail,
+                                        at: change.at.to_rfc3339(),
+                                    });
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(_) => break,
+                            }
+                        }
+                        _ = bridge_shutdown.changed() => {
+                            if *bridge_shutdown.borrow() { break; }
+                        }
+                    }
+                }
+            });
+        }
 
         // API router: /api/v1 routes with body limit + api_key auth + CORS
         let api_app = Router::new()
