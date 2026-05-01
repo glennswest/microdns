@@ -5,6 +5,7 @@
 ### 2026-05-01
 - **docs:** Load balancer parity design — `docs/loadbalancer-design.md` inventories ploadb (pdnsloadbalancer) functionality, gaps in current `microdns-lb`, and approved plan to reach feature parity (per-record probe config, two-pass parallel cycle, real ICMP, last-alive failsafe, REST API, dashboard wiring, persisted health state in new `lb_record_health` redb table with staleness indicator)
 - **fix:** DHCP DNS registration — reservation hostname now takes priority over the client's announced hostname (was the other way around). Ensures clients with stable reservations register the operator-assigned name in DNS regardless of what the device claims to be called
+- **feat:** LB persisted health storage — new `lb_record_health` redb table keyed by `record_id` with `PersistedHealth` rows (status, timestamps, counters, last probe detail). Methods on `Db`: `list_lb_health`, `get_lb_health`, `upsert_lb_health_batch`, `delete_lb_health`. Health rows are auto-removed when the underlying record is deleted. New `HealthStatus` enum (Unknown/Healthy/Unhealthy)
 
 ### 2026-04-27
 - **feat:** Add uptime to health check API — `/api/v1/health` now returns `uptime_seconds` (u64) and `uptime` (human-readable string e.g. "3d 2h 15m 42s")

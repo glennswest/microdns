@@ -164,6 +164,56 @@ pub enum ProbeType {
     Tcp,
 }
 
+impl std::fmt::Display for ProbeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProbeType::Ping => write!(f, "ping"),
+            ProbeType::Http => write!(f, "http"),
+            ProbeType::Https => write!(f, "https"),
+            ProbeType::Tcp => write!(f, "tcp"),
+        }
+    }
+}
+
+/// Health status for a record under load-balancer monitoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthStatus {
+    /// Not yet probed since startup (or persistence).
+    Unknown,
+    /// Last probe succeeded enough times to mark healthy.
+    Healthy,
+    /// Last probe failed enough times to mark unhealthy.
+    Unhealthy,
+}
+
+impl std::fmt::Display for HealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HealthStatus::Unknown => write!(f, "unknown"),
+            HealthStatus::Healthy => write!(f, "healthy"),
+            HealthStatus::Unhealthy => write!(f, "unhealthy"),
+        }
+    }
+}
+
+/// Persisted health-state row. Written at the end of each LB probe cycle so
+/// a quick container restart does not lose the most recent view of each
+/// record's health. Callers should consult `last_checked_at` to decide
+/// whether the row is fresh.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedHealth {
+    pub record_id: Uuid,
+    pub status: HealthStatus,
+    pub last_checked_at: DateTime<Utc>,
+    pub last_state_change_at: DateTime<Utc>,
+    pub last_healthy_at: Option<DateTime<Utc>>,
+    pub last_probe_detail: String,
+    pub last_probe_type: ProbeType,
+    pub consecutive_successes: u32,
+    pub consecutive_failures: u32,
+}
+
 /// DHCP lease record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lease {

@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::types::{
-    DbInstanceConfig, DhcpDbReservation, DhcpPool, DnsForwarder, IpamAllocation, Record,
-    RecordType, ReplicationMeta, Zone,
+    DbInstanceConfig, DhcpDbReservation, DhcpPool, DnsForwarder, IpamAllocation, PersistedHealth,
+    Record, RecordType, ReplicationMeta, Zone,
 };
 use chrono::Utc;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -44,6 +44,11 @@ const DNS_FORWARDERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("
 const INSTANCE_CONFIG_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("instance_config");
 
+/// Load-balancer per-record persisted health state:
+/// record_id (UUID string) -> PersistedHealth (JSON)
+const LB_RECORD_HEALTH_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("lb_record_health");
+
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Database>,
@@ -70,6 +75,7 @@ impl Db {
             let _ = write_txn.open_table(DHCP_RESERVATIONS_TABLE)?;
             let _ = write_txn.open_table(DNS_FORWARDERS_TABLE)?;
             let _ = write_txn.open_table(INSTANCE_CONFIG_TABLE)?;
+            let _ = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -438,6 +444,10 @@ impl Db {
                     by_zone.insert(index_key.as_str(), new_val.as_str())?;
                 }
             }
+
+            // Drop any persisted LB health row keyed on this record_id.
+            let mut lb_health = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
+            lb_health.remove(id_str.as_str())?;
         }
         write_txn.commit()?;
         Ok(())
@@ -999,6 +1009,62 @@ impl Db {
         }
 
         Ok(best.cloned())
+    }
+
+    // ─── Load-balancer persisted health state ────────────────────────────────
+
+    /// List every persisted health row (used to hydrate HealthState on startup).
+    pub fn list_lb_health(&self) -> Result<Vec<PersistedHealth>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (_, v) = entry?;
+            let row: PersistedHealth = serde_json::from_str(v.value())?;
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    /// Get the persisted health row for a specific record.
+    pub fn get_lb_health(&self, record_id: &Uuid) -> Result<Option<PersistedHealth>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
+        let id_str = record_id.to_string();
+        match table.get(id_str.as_str())? {
+            Some(v) => Ok(Some(serde_json::from_str(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Upsert many health rows in a single redb transaction. Called once per
+    /// probe cycle by the LB monitor.
+    pub fn upsert_lb_health_batch(&self, rows: &[PersistedHealth]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
+            for row in rows {
+                let key = row.record_id.to_string();
+                let json = serde_json::to_string(row)?;
+                table.insert(key.as_str(), json.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Delete a single health row (called when its underlying Record is deleted).
+    pub fn delete_lb_health(&self, record_id: &Uuid) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
+            table.remove(record_id.to_string().as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
     }
 }
 
