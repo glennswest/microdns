@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-05-03
+- **feat:** Persisted "last queried" timestamp per `(fqdn, type)` — every DNS query landing on the auth server bumps an in-memory `QueryTracker` (lock-free `DashMap`); a periodic 60 s flush task writes dirty rows to a new `query_stats` redb table. Hydrated on startup so the dashboard view survives a quick restart. Surfaced in `/api/v1/lb/resolutions` (`last_queried_at`, `query_count`) and rendered in the Resolution panel under each FQDN ("Last queried 2m ago · 4,182 total"). Also useful operationally to spot stale records that nothing actually resolves
+
 ### 2026-05-01
 - **docs:** Load balancer parity design — `docs/loadbalancer-design.md` inventories ploadb (pdnsloadbalancer) functionality, gaps in current `microdns-lb`, and approved plan to reach feature parity (per-record probe config, two-pass parallel cycle, real ICMP, last-alive failsafe, REST API, dashboard wiring, persisted health state in new `lb_record_health` redb table with staleness indicator)
 - **fix:** DHCP DNS registration — reservation hostname now takes priority over the client's announced hostname (was the other way around). Ensures clients with stable reservations register the operator-assigned name in DNS regardless of what the device claims to be called

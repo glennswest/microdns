@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::types::{
     DbInstanceConfig, DhcpDbReservation, DhcpPool, DnsForwarder, IpamAllocation, PersistedHealth,
-    Record, RecordType, ReplicationMeta, Zone,
+    QueryStat, Record, RecordType, ReplicationMeta, Zone,
 };
 use chrono::Utc;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -49,6 +49,11 @@ const INSTANCE_CONFIG_TABLE: TableDefinition<&str, &str> =
 const LB_RECORD_HEALTH_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("lb_record_health");
 
+/// Per-(fqdn,type) query stats: "{fqdn_lc}:{TYPE}" -> QueryStat (JSON).
+/// Written by a periodic flush from the in-memory `QueryTracker`.
+const QUERY_STATS_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("query_stats");
+
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Database>,
@@ -76,6 +81,7 @@ impl Db {
             let _ = write_txn.open_table(DNS_FORWARDERS_TABLE)?;
             let _ = write_txn.open_table(INSTANCE_CONFIG_TABLE)?;
             let _ = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
+            let _ = write_txn.open_table(QUERY_STATS_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -1062,6 +1068,55 @@ impl Db {
         {
             let mut table = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
             table.remove(record_id.to_string().as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // ─── Query stats ─────────────────────────────────────────────────────────
+
+    /// List every persisted query-stats row.
+    pub fn list_query_stats(&self) -> Result<Vec<QueryStat>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(QUERY_STATS_TABLE)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (_, v) = entry?;
+            let row: QueryStat = serde_json::from_str(v.value())?;
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    /// Look up the persisted stats for a single (fqdn, type) pair.
+    pub fn get_query_stat(
+        &self,
+        fqdn_lc: &str,
+        rtype: RecordType,
+    ) -> Result<Option<QueryStat>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(QUERY_STATS_TABLE)?;
+        let key = format!("{fqdn_lc}:{rtype}");
+        match table.get(key.as_str())? {
+            Some(v) => Ok(Some(serde_json::from_str(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Upsert a batch of query-stats rows in a single redb txn. Used by
+    /// the periodic flush from `QueryTracker`.
+    pub fn upsert_query_stats_batch(&self, rows: &[QueryStat]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(QUERY_STATS_TABLE)?;
+            for row in rows {
+                let key = format!("{}:{}", row.fqdn, row.record_type);
+                let json = serde_json::to_string(row)?;
+                table.insert(key.as_str(), json.as_str())?;
+            }
         }
         write_txn.commit()?;
         Ok(())

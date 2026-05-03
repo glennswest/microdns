@@ -5,6 +5,7 @@ use hickory_proto::op::{MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::{LowerName, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use microdns_core::db::Db;
+use microdns_core::query_tracker::QueryTracker;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +24,7 @@ pub struct AuthServer {
     listen_addr: SocketAddr,
     catalog: Arc<ZoneCatalog>,
     db: Db,
+    tracker: Option<Arc<QueryTracker>>,
 }
 
 impl AuthServer {
@@ -31,7 +33,13 @@ impl AuthServer {
             listen_addr,
             catalog: Arc::new(ZoneCatalog::new(db.clone())),
             db,
+            tracker: None,
         }
+    }
+
+    pub fn with_query_tracker(mut self, tracker: Arc<QueryTracker>) -> Self {
+        self.tracker = Some(tracker);
+        self
     }
 
     pub async fn run(self, shutdown: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<()> {
@@ -48,6 +56,7 @@ impl AuthServer {
 
         let catalog_tcp = self.catalog.clone();
         let db_tcp = self.db.clone();
+        let tracker_tcp = self.tracker.clone();
 
         // TCP accept loop with connection limit
         let tcp_semaphore = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
@@ -67,10 +76,11 @@ impl AuthServer {
                                 debug!("TCP connection from {src}");
                                 let catalog = catalog_tcp.clone();
                                 let db = db_tcp.clone();
+                                let tracker = tracker_tcp.clone();
                                 tokio::spawn(async move {
                                     let result = tokio::time::timeout(
                                         TCP_TIMEOUT,
-                                        handle_tcp_connection(stream, &catalog, &db),
+                                        handle_tcp_connection(stream, &catalog, &db, tracker.as_deref()),
                                     ).await;
                                     match result {
                                         Ok(Err(e)) => warn!("TCP handler error from {src}: {e}"),
@@ -103,7 +113,7 @@ impl AuthServer {
                     let catalog = self.catalog.clone();
                     let socket_ref = &socket;
 
-                    let response = Self::handle_query(&catalog, &data);
+                    let response = Self::handle_query(&catalog, &data, self.tracker.as_deref());
                     match response {
                         Ok(resp) => {
                             if let Err(e) = socket_ref.send_to(&resp, src).await {
@@ -128,7 +138,11 @@ impl AuthServer {
         Ok(())
     }
 
-    fn handle_query(catalog: &ZoneCatalog, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    fn handle_query(
+        catalog: &ZoneCatalog,
+        data: &[u8],
+        tracker: Option<&QueryTracker>,
+    ) -> anyhow::Result<Vec<u8>> {
         use hickory_proto::op::Message;
 
         let request = Message::from_bytes(data)?;
@@ -160,6 +174,17 @@ impl AuthServer {
         let query = &queries[0];
         let qname: LowerName = LowerName::from(query.name().clone());
         let qtype = query.query_type();
+
+        // Bump the per-(fqdn,type) query tracker before we even decide
+        // authoritativeness. This counts every received query — useful
+        // for spotting stale entries that nothing actually resolves.
+        if let Some(tracker) = tracker {
+            if let Some(rtype) = map_hickory_type(qtype) {
+                let fqdn = qname.to_string();
+                let fqdn = fqdn.trim_end_matches('.');
+                tracker.bump(fqdn, rtype, chrono::Utc::now());
+            }
+        }
 
         debug!("query: {} {} from catalog", qname, qtype);
 
@@ -208,10 +233,30 @@ impl AuthServer {
     }
 }
 
+/// Map hickory's `RecordType` to our core `RecordType` for tracker keys.
+/// Returns `None` for types we don't model (ANY, AXFR, OPT, etc.).
+fn map_hickory_type(t: RecordType) -> Option<microdns_core::types::RecordType> {
+    use microdns_core::types::RecordType as CRT;
+    Some(match t {
+        RecordType::A => CRT::A,
+        RecordType::AAAA => CRT::AAAA,
+        RecordType::CNAME => CRT::CNAME,
+        RecordType::MX => CRT::MX,
+        RecordType::NS => CRT::NS,
+        RecordType::PTR => CRT::PTR,
+        RecordType::SOA => CRT::SOA,
+        RecordType::SRV => CRT::SRV,
+        RecordType::TXT => CRT::TXT,
+        RecordType::CAA => CRT::CAA,
+        _ => return None,
+    })
+}
+
 async fn handle_tcp_connection(
     mut stream: tokio::net::TcpStream,
     catalog: &ZoneCatalog,
     db: &Db,
+    tracker: Option<&QueryTracker>,
 ) -> anyhow::Result<()> {
     // Read 2-byte length prefix
     let msg_len = stream.read_u16().await? as usize;
@@ -281,7 +326,7 @@ async fn handle_tcp_connection(
         }
     } else {
         // Regular TCP query — reuse UDP handler
-        let response = AuthServer::handle_query(catalog, &buf)?;
+        let response = AuthServer::handle_query(catalog, &buf, tracker)?;
         let len = response.len() as u16;
         stream.write_all(&len.to_be_bytes()).await?;
         stream.write_all(&response).await?;

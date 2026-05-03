@@ -211,6 +211,22 @@ impl std::fmt::Display for HealthStatus {
     }
 }
 
+/// Per-query observability stats. Tracks when each `(fqdn, type)` pair
+/// was last asked about by a real DNS client and how many times in
+/// total. Persisted via the `query_stats` redb table; hydrated on
+/// startup; flushed periodically by the runtime so the in-memory hot
+/// path stays cheap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryStat {
+    /// Lower-cased FQDN without trailing dot.
+    pub fqdn: String,
+    pub record_type: RecordType,
+    pub last_queried_at: DateTime<Utc>,
+    /// Total queries observed across all time (since the redb file was
+    /// created or hydrated). Bumped per flush, not per query.
+    pub total_count: u64,
+}
+
 /// Persisted health-state row. Written at the end of each LB probe cycle so
 /// a quick container restart does not lose the most recent view of each
 /// record's health. Callers should consult `last_checked_at` to decide

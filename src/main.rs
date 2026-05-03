@@ -268,11 +268,38 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Per-(fqdn,type) query tracker. Hydrated from redb so a quick
+    // restart preserves the "last queried" view; flushed every 60s.
+    let query_tracker = Arc::new(microdns_core::query_tracker::QueryTracker::new());
+    query_tracker.hydrate(&db);
+    {
+        let tracker = query_tracker.clone();
+        let db_flush = db.clone();
+        let mut shutdown_flush = shutdown_rx.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => { let _ = tracker.flush(&db_flush); }
+                    _ = shutdown_flush.changed() => {
+                        if *shutdown_flush.borrow() {
+                            // One last flush so in-flight observations land.
+                            let _ = tracker.flush(&db_flush);
+                            break;
+                        }
+                    }
+                }
+            }
+        }));
+    }
+
     // Start auth DNS server
     if let Some(ref auth_config) = config.dns.auth {
         if auth_config.enabled {
             let addr: SocketAddr = auth_config.listen.parse()?;
-            let server = AuthServer::new(addr, db.clone());
+            let server = AuthServer::new(addr, db.clone())
+                .with_query_tracker(query_tracker.clone());
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = server.run(rx).await {
@@ -533,6 +560,7 @@ async fn main() -> Result<()> {
             if let Some(handles) = lb_handles.take() {
                 api = api.with_lb(handles);
             }
+            api = api.with_query_tracker(query_tracker.clone());
 
             // Bridge DHCP lease events to dashboard
             if let Some(lease_rx_sender) = dhcp_lease_event_tx.take() {

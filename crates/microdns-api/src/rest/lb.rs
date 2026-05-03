@@ -5,7 +5,9 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use microdns_core::types::{HealthCheck, HealthStatus, ProbeType, RecordData};
+use microdns_core::types::{
+    HealthCheck, HealthStatus, ProbeType, RecordData, RecordType,
+};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -394,6 +396,11 @@ struct ResolutionRow {
     ///   moment the last member went unhealthy).
     /// Null if no member has ever been observed (Unknown).
     service_since: Option<DateTime<Utc>>,
+    /// When a real DNS client most recently asked for this `(fqdn, type)`.
+    /// Null if no client has queried (or no `QueryTracker` is wired).
+    last_queried_at: Option<DateTime<Utc>>,
+    /// Cumulative count of queries observed since the redb file was created.
+    query_count: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -525,6 +532,14 @@ async fn lb_resolutions(
                 })
             })
             .collect();
+        let (last_queried_at, query_count) = match (&state.query_tracker, parse_record_type(&rtype)) {
+            (Some(tracker), Some(rt)) => match tracker.get(&fqdn, rt) {
+                Some(stat) => (Some(stat.last_queried_at), stat.total_count),
+                None => (None, 0),
+            },
+            _ => (None, 0),
+        };
+
         out.push(ResolutionRow {
             zone_id,
             zone_name,
@@ -535,6 +550,8 @@ async fn lb_resolutions(
             total_members,
             service_status,
             service_since,
+            last_queried_at,
+            query_count,
         });
     }
 
@@ -828,6 +845,22 @@ fn build_fqdn(name: &str, zone_name: &str) -> String {
         zone.to_string()
     } else {
         format!("{name}.{zone}")
+    }
+}
+
+fn parse_record_type(s: &str) -> Option<RecordType> {
+    match s.to_ascii_uppercase().as_str() {
+        "A" => Some(RecordType::A),
+        "AAAA" => Some(RecordType::AAAA),
+        "CNAME" => Some(RecordType::CNAME),
+        "MX" => Some(RecordType::MX),
+        "NS" => Some(RecordType::NS),
+        "PTR" => Some(RecordType::PTR),
+        "SOA" => Some(RecordType::SOA),
+        "SRV" => Some(RecordType::SRV),
+        "TXT" => Some(RecordType::TXT),
+        "CAA" => Some(RecordType::CAA),
+        _ => None,
     }
 }
 

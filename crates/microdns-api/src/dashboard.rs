@@ -1436,14 +1436,22 @@ async function loadLB() {
             serviceLine = `<span class="badge info" style="font-size:9px">UNKNOWN</span>`;
           }
 
+          const queriedSecs = durationSinceIso(r.last_queried_at);
+          const queriedLine = r.last_queried_at
+            ? `Last queried ${fmtAge(queriedSecs)} <span class="lb-tag">${r.query_count.toLocaleString()} total</span>`
+            : `<span style="color:var(--text-muted)">never queried</span>`;
+
           const enabled = r.answers.length;
           const hasFailsafe = r.answers.some(a => a.failsafe);
           const summary = `${enabled}/${r.total_members} returned${hasFailsafe?' (failsafe)':''}`;
 
           const header = `<div class="lb-zone-name">🔍 ${esc(r.fqdn)} <span class="lb-tag">${esc(r.record_type)}</span></div>
-            <div style="margin-left:8px;font-size:11px;color:var(--text-muted);margin-bottom:4px">
+            <div style="margin-left:8px;font-size:11px;color:var(--text-muted);margin-bottom:2px">
               ${serviceLine}
               <span style="float:right">${esc(summary)}</span>
+            </div>
+            <div style="margin-left:8px;font-size:11px;color:var(--text-muted);margin-bottom:4px">
+              ${queriedLine}
             </div>`;
 
           if (enabled === 0) {

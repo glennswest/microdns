@@ -12,6 +12,7 @@ use tower_http::cors::{Any, CorsLayer};
 use microdns_core::config::{IpamPool, PeerConfig};
 use microdns_core::db::Db;
 use microdns_core::log_buffer::LogBuffer;
+use microdns_core::query_tracker::QueryTracker;
 use microdns_core::types::ProbeType;
 use microdns_federation::heartbeat::HeartbeatTracker;
 use microdns_lb::halfopen::HalfOpenManager;
@@ -49,6 +50,7 @@ pub struct ApiServer {
     event_tx: broadcast::Sender<DashboardEvent>,
     recursor_cache: Option<Arc<DnsCache>>,
     lb: Option<LbHandles>,
+    query_tracker: Option<Arc<QueryTracker>>,
 }
 
 /// Hooks the API needs to surface load-balancer state and emit/receive
@@ -107,6 +109,7 @@ pub struct AppState {
     pub recursor_cache: Option<Arc<DnsCache>>,
     pub started_at: Instant,
     pub lb: Option<LbHandles>,
+    pub query_tracker: Option<Arc<QueryTracker>>,
 }
 
 impl ApiServer {
@@ -127,11 +130,17 @@ impl ApiServer {
             event_tx,
             recursor_cache: None,
             lb: None,
+            query_tracker: None,
         }
     }
 
     pub fn with_lb(mut self, handles: LbHandles) -> Self {
         self.lb = Some(handles);
+        self
+    }
+
+    pub fn with_query_tracker(mut self, tracker: Arc<QueryTracker>) -> Self {
+        self.query_tracker = Some(tracker);
         self
     }
 
@@ -204,6 +213,7 @@ impl ApiServer {
             recursor_cache: self.recursor_cache,
             started_at: Instant::now(),
             lb: self.lb,
+            query_tracker: self.query_tracker,
         };
 
         // Bridge LB state-changes onto the dashboard broadcast so the
