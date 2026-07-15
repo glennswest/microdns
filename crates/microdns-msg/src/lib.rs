@@ -26,6 +26,8 @@ pub trait MessageBus: Send + Sync + 'static {
 }
 
 /// Create a message bus from configuration.
+// `url` is only read by the NATS backend; without that feature it is unused.
+#[cfg_attr(not(feature = "nats"), allow(unused_variables))]
 pub async fn create_message_bus(
     backend: &str,
     instance_id: &str,

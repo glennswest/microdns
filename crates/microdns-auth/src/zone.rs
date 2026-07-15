@@ -188,6 +188,15 @@ pub fn resolve_query(db: &Db, qname: &LowerName, qtype: RecordType) -> Vec<DnsRe
         None => return Vec::new(),
     };
 
+    // CoreDNS-style wildcard query: a query that itself contains a `*` label
+    // (e.g. `*.default.svc.cluster.local`, or `_http._tcp.*.ns.svc...`) matches
+    // every record at that position and returns them under their real names.
+    // Normal queries never contain `*`, so this path only ever *adds* answers
+    // for explicit wildcard queries and cannot affect ordinary resolution.
+    if fqdn.split('.').any(|label| label == "*") {
+        return resolve_wildcard_query(db, fqdn, micro_rtype);
+    }
+
     // Query the database
     let records = match db.query_fqdn(fqdn, micro_rtype) {
         Ok(records) => records,
@@ -234,6 +243,56 @@ pub fn resolve_query(db: &Db, qname: &LowerName, qtype: RecordType) -> Vec<DnsRe
     dns_records
 }
 
+/// Resolve a query whose name contains one or more `*` labels by matching every
+/// record in the owning zone where `*` stands for any single label (CoreDNS
+/// behavior). Answers are returned under each record's real FQDN.
+fn resolve_wildcard_query(db: &Db, fqdn: &str, rtype: MicroRecordType) -> Vec<DnsRecord> {
+    let zone = match db.find_zone_for_fqdn(fqdn) {
+        Ok(Some(z)) => z,
+        _ => return Vec::new(),
+    };
+    let zone_name = zone.name.trim_end_matches('.');
+
+    // Query pattern relative to the zone origin, e.g. `*.default.svc`.
+    let pattern = match fqdn.strip_suffix(&format!(".{zone_name}")) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let pat_labels: Vec<&str> = pattern.split('.').collect();
+
+    let records = match db.list_records(&zone.id) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    for record in &records {
+        if !record.enabled || record.data.record_type() != rtype {
+            continue;
+        }
+        let rec_labels: Vec<&str> = record.name.split('.').collect();
+        if rec_labels.len() != pat_labels.len() {
+            continue;
+        }
+        // `*` in the query matches any single label; other labels must be equal.
+        let matches = pat_labels
+            .iter()
+            .zip(&rec_labels)
+            .all(|(p, r)| *p == "*" || p == r);
+        if !matches {
+            continue;
+        }
+        let name = match Name::from_str(&format!("{}.{}.", record.name, zone_name)) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if let Some(rdata) = to_rdata(&record.data) {
+            out.push(DnsRecord::from_rdata(name, record.ttl, rdata));
+        }
+    }
+    out
+}
+
 /// Get the SOA record for the authority section (NXDOMAIN responses)
 pub fn get_authority_soa(db: &Db, qname: &LowerName) -> Option<DnsRecord> {
     let fqdn = qname.to_string();
@@ -243,4 +302,74 @@ pub fn get_authority_soa(db: &Db, qname: &LowerName) -> Option<DnsRecord> {
         .ok()
         .flatten()
         .and_then(|zone| build_soa_record(&zone))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use microdns_core::db::Db;
+    use microdns_core::types::{Record, RecordData as RD, SoaData, Zone};
+    use uuid::Uuid;
+
+    fn soa() -> SoaData {
+        SoaData {
+            mname: "ns.cluster.local".into(),
+            rname: "admin.cluster.local".into(),
+            serial: 1,
+            refresh: 3600,
+            retry: 900,
+            expire: 604800,
+            minimum: 30,
+        }
+    }
+
+    fn add_a(db: &Db, zone: &Uuid, name: &str, ip: &str) {
+        db.create_record(&Record {
+            id: Uuid::new_v4(),
+            zone_id: *zone,
+            name: name.into(),
+            ttl: 30,
+            data: RD::A(ip.parse().unwrap()),
+            enabled: true,
+            health_check: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn wildcard_query_returns_all_matching_and_leaves_normal_queries_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.redb")).unwrap();
+        let zid = Uuid::new_v4();
+        db.create_zone(
+            "cluster.local",
+            &Zone {
+                id: zid,
+                name: "cluster.local".into(),
+                soa: soa(),
+                default_ttl: 30,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        add_a(&db, &zid, "a.default.svc", "10.0.0.1");
+        add_a(&db, &zid, "b.default.svc", "10.0.0.2");
+        add_a(&db, &zid, "c.other.svc", "10.0.0.3");
+
+        // CoreDNS-style wildcard: `*.default.svc` → a + b (not c in `other`).
+        let q = LowerName::from(Name::from_str("*.default.svc.cluster.local.").unwrap());
+        assert_eq!(resolve_query(&db, &q, RecordType::A).len(), 2);
+
+        // A normal (non-`*`) query still resolves exactly one record.
+        let q2 = LowerName::from(Name::from_str("a.default.svc.cluster.local.").unwrap());
+        assert_eq!(resolve_query(&db, &q2, RecordType::A).len(), 1);
+
+        // A non-existent normal name still returns nothing (NXDOMAIN path).
+        let q3 = LowerName::from(Name::from_str("nope.default.svc.cluster.local.").unwrap());
+        assert_eq!(resolve_query(&db, &q3, RecordType::A).len(), 0);
+    }
 }

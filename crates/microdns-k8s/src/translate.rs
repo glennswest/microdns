@@ -75,8 +75,18 @@ pub struct PortSnap {
 #[derive(Debug, Clone, Default)]
 pub struct EndpointsSnap {
     pub addresses: Vec<AddrSnap>,
+    /// Endpoints whose address is a DNS name (EndpointSlice `addressType: FQDN`),
+    /// rather than an IP — served as CNAMEs.
+    pub fqdns: Vec<FqdnEndpointSnap>,
     /// Endpoint ports (used for headless SRV; falls back to service ports).
     pub ports: Vec<PortSnap>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FqdnEndpointSnap {
+    pub hostname: Option<String>,
+    pub fqdn: String,
+    pub ready: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +171,24 @@ pub fn service_records(
         ServiceKind::Headless => {
             let Some(ep) = endpoints else { return out };
             let include = |a: &AddrSnap| a.ready || svc.publish_not_ready;
+
+            // FQDN-typed endpoints are served as CNAMEs. They can only be named
+            // via their per-endpoint hostname — a CNAME at the service apex would
+            // collide across endpoints — so endpoints without a hostname are
+            // skipped (there is no valid single-owner name for them).
+            for fe in ep
+                .fqdns
+                .iter()
+                .filter(|f| f.ready || svc.publish_not_ready)
+            {
+                if let Some(host) = &fe.hostname {
+                    out.push(DesiredRecord {
+                        name: format!("{host}.{base}"),
+                        ttl,
+                        data: RecordData::CNAME(absolute(&fe.fqdn)),
+                    });
+                }
+            }
 
             for addr in ep.addresses.iter().filter(|a| include(a)) {
                 // Set of A/AAAA at the service name.
@@ -384,6 +412,7 @@ mod tests {
         };
         let ep = EndpointsSnap {
             addresses: vec![ready("10.1.1.1", Some("web-0")), ready("10.1.1.2", None)],
+            fqdns: vec![],
             ports: vec![],
         };
         let recs = service_records(&svc, Some(&ep), 30, "cluster.local");
@@ -416,10 +445,48 @@ mod tests {
                 hostname: None,
                 ready: false,
             }],
+            fqdns: vec![],
             ports: vec![],
         };
         assert!(service_records(&mk(false), Some(&ep), 30, "cluster.local").is_empty());
         assert!(!service_records(&mk(true), Some(&ep), 30, "cluster.local").is_empty());
+    }
+
+    #[test]
+    fn headless_fqdn_endpoints_become_cnames() {
+        let svc = ServiceSnap {
+            name: "ext".into(),
+            namespace: "prod".into(),
+            kind: ServiceKind::Headless,
+            ports: vec![],
+            publish_not_ready: false,
+        };
+        let ep = EndpointsSnap {
+            addresses: vec![],
+            fqdns: vec![
+                FqdnEndpointSnap {
+                    hostname: Some("a".into()),
+                    fqdn: "svc-a.example.com".into(),
+                    ready: true,
+                },
+                // no hostname → skipped (no valid single-owner name)
+                FqdnEndpointSnap {
+                    hostname: None,
+                    fqdn: "svc-b.example.com".into(),
+                    ready: true,
+                },
+            ],
+            ports: vec![],
+        };
+        let recs = service_records(&svc, Some(&ep), 30, "cluster.local");
+        assert_eq!(
+            recs,
+            vec![DesiredRecord {
+                name: "a.ext.prod.svc".into(),
+                ttl: 30,
+                data: RecordData::CNAME("svc-a.example.com.".into()),
+            }]
+        );
     }
 
     #[test]
@@ -458,6 +525,7 @@ mod tests {
         };
         let ep = EndpointsSnap {
             addresses: vec![ready("fd00::5", None)],
+            fqdns: vec![],
             ports: vec![],
         };
         let recs = service_records(&svc, Some(&ep), 30, "cluster.local");

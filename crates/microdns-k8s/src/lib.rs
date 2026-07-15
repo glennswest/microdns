@@ -63,7 +63,13 @@ impl K8sSource {
     /// Connect to the apiserver, start the reflector watchers and drive the
     /// reconcile loop until `shutdown` flips to `true`.
     pub async fn run(self, mut shutdown: tokio_watch::Receiver<bool>) -> anyhow::Result<()> {
-        let client = build_client(&self.config).await?;
+        // Retry the initial connection with backoff so a not-yet-ready apiserver
+        // at boot doesn't kill the source (once watching, kube-rs handles
+        // reconnects/relists itself).
+        let client = match connect_with_retry(&self.config, &mut shutdown).await {
+            Some(client) => client,
+            None => return Ok(()), // shutdown requested during retry
+        };
         info!(
             "microdns-k8s: watching apiserver for zone {} (endpoint source: {:?})",
             self.config.cluster_domain, self.config.endpoint_source
@@ -173,6 +179,36 @@ async fn reconcile_loop(
         );
         if let Err(e) = reconciler.apply(desired) {
             warn!("microdns-k8s: reconcile failed: {e}");
+        }
+    }
+}
+
+/// Build the kube client, retrying with exponential backoff (capped) until it
+/// succeeds or shutdown is requested. Returns `None` if shutdown won the race.
+async fn connect_with_retry(
+    config: &K8sConfig,
+    shutdown: &mut tokio_watch::Receiver<bool>,
+) -> Option<Client> {
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(30);
+    loop {
+        match build_client(config).await {
+            Ok(client) => return Some(client),
+            Err(e) => {
+                warn!(
+                    "microdns-k8s: apiserver connection failed: {e}; retrying in {}s",
+                    backoff.as_secs()
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() {
+                            return None;
+                        }
+                    }
+                }
+                backoff = (backoff * 2).min(max_backoff);
+            }
         }
     }
 }

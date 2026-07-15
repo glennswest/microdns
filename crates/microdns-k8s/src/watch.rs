@@ -17,8 +17,8 @@ use kube::ResourceExt;
 
 use crate::config::EndpointSource;
 use crate::translate::{
-    meta_records, pod_records, service_records, AddrSnap, DesiredRecord, EndpointsSnap, PodSnap,
-    PortSnap, ServiceKind, ServiceSnap,
+    meta_records, pod_records, service_records, AddrSnap, DesiredRecord, EndpointsSnap,
+    FqdnEndpointSnap, PodSnap, PortSnap, ServiceKind, ServiceSnap,
 };
 
 /// Label EndpointSlices carry to point back at their owning Service.
@@ -158,22 +158,36 @@ fn slice_service_key(slice: &EndpointSlice) -> Option<NsName> {
 
 /// Fold one EndpointSlice's addresses and ports into the service's snapshot.
 fn merge_slice(snap: &mut EndpointsSnap, slice: &EndpointSlice) {
-    // Only IP address types carry A/AAAA-relevant data (skip FQDN slices).
-    let is_ip = matches!(slice.address_type.as_str(), "IPv4" | "IPv6");
-    if is_ip {
-        for ep in &slice.endpoints {
-            // `ready` defaults to true when the condition is unset.
-            let ready = ep.conditions.as_ref().and_then(|c| c.ready).unwrap_or(true);
-            for addr in &ep.addresses {
-                if let Ok(ip) = addr.parse::<IpAddr>() {
-                    snap.addresses.push(AddrSnap {
-                        ip,
+    // IPv4/IPv6 slices carry A/AAAA data; FQDN slices carry DNS names (CNAMEs).
+    match slice.address_type.as_str() {
+        "IPv4" | "IPv6" => {
+            for ep in &slice.endpoints {
+                // `ready` defaults to true when the condition is unset.
+                let ready = ep.conditions.as_ref().and_then(|c| c.ready).unwrap_or(true);
+                for addr in &ep.addresses {
+                    if let Ok(ip) = addr.parse::<IpAddr>() {
+                        snap.addresses.push(AddrSnap {
+                            ip,
+                            hostname: ep.hostname.clone(),
+                            ready,
+                        });
+                    }
+                }
+            }
+        }
+        "FQDN" => {
+            for ep in &slice.endpoints {
+                let ready = ep.conditions.as_ref().and_then(|c| c.ready).unwrap_or(true);
+                for addr in &ep.addresses {
+                    snap.fqdns.push(FqdnEndpointSnap {
                         hostname: ep.hostname.clone(),
+                        fqdn: addr.clone(),
                         ready,
                     });
                 }
             }
         }
+        _ => {}
     }
     for p in slice.ports.as_deref().unwrap_or(&[]) {
         if let Some(port) = p.port.and_then(|v| u16::try_from(v).ok()) {
