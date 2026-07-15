@@ -1652,7 +1652,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "microdns"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-dhcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-federation"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-k8s"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-lb"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-msg"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "microdns-recursor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "dashmap",

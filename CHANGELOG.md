@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0] - 2026-07-14
+
+### Changed
+- **feat(msg):** NATS messaging is now **opt-in** behind the `nats` cargo feature and **off by default**. Default builds exclude `async-nats` entirely. In a Kubernetes deployment the kube-apiserver watch (etcd) handles change propagation, so NATS is not needed; enable with `--features nats` for the standalone federated LAN topology. A `nats` backend configured in a build without the feature falls back to noop with a clear error.
+
+## [0.3.0] - 2026-07-14
+
+### Added
+- **feat(k8s):** Kubernetes DNS source (`microdns-k8s`) — watches a kube-apiserver and serves a cluster's internal zone (`cluster.local` + reverse zones) live from Services, EndpointSlices/Endpoints and Pods, implementing the Kubernetes DNS-Based Service Discovery spec (CoreDNS / OpenShift-DNS equivalent). ClusterIP (dual-stack A/AAAA), headless (per-endpoint records honoring `ready`/`publishNotReadyAddresses`), ExternalName (CNAME), SRV for named ports, pod records, apex `NS`/`ns.dns`/`dns-version` TXT, PTR with stale-IP pruning. Full IPv6 parity. Runs in-process (like CoreDNS's kubernetes plugin), auto-enables when running inside a Kubernetes pod.
+- **build:** deb/rpm packaging (nfpm) + native systemd unit for arm64/armv7, and a size-optimized release profile (strip + LTO + `panic=abort`).
+
 ## [Unreleased]
 
 ### 2026-05-03
