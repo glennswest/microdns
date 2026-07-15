@@ -1,0 +1,39 @@
+# MicroDNS — packaged default configuration.
+# Installed to /etc/microdns/microdns.toml (config, not overwritten on upgrade).
+
+[instance]
+id = "microdns-01"
+mode = "standalone"
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:53"
+zones = []
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:5353"
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+dashboard_listen = "0.0.0.0:80"
+# api_key = "change-me-in-production"
+
+[database]
+path = "/var/lib/microdns/microdns.redb"
+
+[logging]
+level = "info"
+format = "text"
+
+# Kubernetes DNS source — serves cluster.local from a kube-apiserver
+# (CoreDNS-equivalent). With `enabled` unset it auto-detects: on when running
+# inside a Kubernetes pod, off otherwise. Uncomment to configure explicitly.
+# [k8s]
+# enabled = true
+# cluster_domain = "cluster.local"
+# ttl = 30
+# endpoint_source = "auto"          # auto | slices | endpoints
+# dns_service_ips = ["10.96.0.10"]  # enables apex NS/ns.dns records
+# kubeconfig = "/etc/microdns/kubeconfig"  # omit when running in-cluster

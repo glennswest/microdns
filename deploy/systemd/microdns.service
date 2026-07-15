@@ -1,0 +1,29 @@
+[Unit]
+Description=MicroDNS — DNS/DHCP/IPAM infrastructure server
+Documentation=https://github.com/glennswest/microdns
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/microdns --config /etc/microdns/microdns.toml
+Restart=on-failure
+RestartSec=2
+
+# DNS (:53), dashboard (:80), DHCP and ICMP health probes need privileged
+# ports and raw sockets. Grant just those capabilities rather than full root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN
+
+# Managed state and config directories (/var/lib/microdns, /etc/microdns).
+StateDirectory=microdns
+ConfigurationDirectory=microdns
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/microdns
+
+[Install]
+WantedBy=multi-user.target

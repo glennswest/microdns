@@ -1,0 +1,36 @@
+# nfpm config — builds BOTH .rpm and .deb for MicroDNS.
+#   PKG_ARCH=arm64 PKG_VERSION=0.1.0 BIN=target/aarch64-unknown-linux-musl/release/microdns \
+#     nfpm package -f deploy/packaging/nfpm.yaml -p deb -t dist/
+#   ... -p rpm -t dist/
+# PKG_ARCH: arm64 (aarch64) or arm7 (armv7hl/armhf). BIN points at the
+# cross-built release binary for that arch.
+name: "microdns"
+arch: "${PKG_ARCH}"
+platform: "linux"
+version: "${PKG_VERSION}"
+section: "net"
+priority: "optional"
+maintainer: "Glenn West <glennswest@neuralcloudcomputing.com>"
+description: |
+  MicroDNS — single-binary DNS infrastructure server: authoritative + recursive
+  DNS, DNS-based load balancing, DHCPv4/v6/SLAAC and IPAM, backed by an embedded
+  database with zero external dependencies. Includes a Kubernetes DNS source
+  that serves cluster.local live from a kube-apiserver (a CoreDNS / OpenShift
+  DNS equivalent for the rustkube control plane).
+vendor: "glennswest"
+homepage: "https://github.com/glennswest/microdns"
+license: "MIT"
+
+contents:
+  - src: "${BIN}"
+    dst: "/usr/bin/microdns"
+
+  - src: "./deploy/systemd/microdns.service"
+    dst: "/usr/lib/systemd/system/microdns.service"
+
+  - src: "./deploy/microdns.toml"
+    dst: "/etc/microdns/microdns.toml"
+    type: "config|noreplace"
+
+scripts:
+  postinstall: ./deploy/packaging/postinstall.sh
