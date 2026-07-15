@@ -14,8 +14,15 @@ anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 async-trait = "0.1"
-async-nats.workspace = true
+async-nats = { workspace = true, optional = true }
 futures = "0.3"
+
+[features]
+# NATS is opt-in. In a Kubernetes deployment the kube-apiserver watch (etcd)
+# is the change-propagation mechanism, so NATS is not needed there; it is used
+# for the standalone federated LAN topology.
+default = []
+nats = ["dep:async-nats"]
 
 [dev-dependencies]
 tempfile = "3"

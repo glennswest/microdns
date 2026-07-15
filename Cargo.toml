@@ -129,3 +129,10 @@ chrono.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
+
+[features]
+# NATS messaging is opt-in (needed only for the standalone federated LAN
+# topology; Kubernetes deployments use the apiserver watch instead).
+#   cargo build --release --features nats
+default = []
+nats = ["microdns-msg/nats"]

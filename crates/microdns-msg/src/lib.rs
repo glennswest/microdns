@@ -1,5 +1,6 @@
 pub mod events;
 pub mod kafka;
+#[cfg(feature = "nats")]
 pub mod nats;
 pub mod noop;
 
@@ -34,10 +35,21 @@ pub async fn create_message_bus(
 ) -> anyhow::Result<Box<dyn MessageBus>> {
     match backend {
         "nats" => {
-            let nats_url = url.unwrap_or("nats://127.0.0.1:4222");
-            Ok(Box::new(
-                nats::NatsMessageBus::new(instance_id, topic_prefix, nats_url).await?,
-            ))
+            #[cfg(feature = "nats")]
+            {
+                let nats_url = url.unwrap_or("nats://127.0.0.1:4222");
+                Ok(Box::new(
+                    nats::NatsMessageBus::new(instance_id, topic_prefix, nats_url).await?,
+                ))
+            }
+            #[cfg(not(feature = "nats"))]
+            {
+                anyhow::bail!(
+                    "NATS backend requested but this build was compiled without the `nats` \
+                     feature (build with --features nats). In a Kubernetes deployment the \
+                     apiserver watch handles change propagation and NATS is not needed."
+                )
+            }
         }
         "kafka" | "redpanda" => Ok(Box::new(kafka::KafkaMessageBus::new(
             instance_id,
