@@ -19,3 +19,10 @@ Thumbs.db
 # Environment
 .env
 .env.*
+
+# Packaging output and cross target dirs
+dist/
+*.deb
+*.rpm
+target-*/
+*.bundle
