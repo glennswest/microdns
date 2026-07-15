@@ -8,6 +8,7 @@ members = [
     "crates/microdns-dhcp",
     "crates/microdns-msg",
     "crates/microdns-federation",
+    "crates/microdns-k8s",
 ]
 resolver = "2"
 
@@ -25,6 +26,10 @@ hickory-server = "0.24"
 hickory-resolver = "0.24"
 hickory-proto = "0.24"
 hickory-client = "0.24"
+
+# Kubernetes (cluster.local source — watches a rustkube/k8s apiserver)
+kube = { version = "0.99", default-features = false, features = ["client", "runtime", "rustls-tls"] }
+k8s-openapi = { version = "0.24", features = ["v1_32"] }
 
 # Database
 redb = "2"
@@ -89,6 +94,7 @@ microdns-lb = { path = "crates/microdns-lb" }
 microdns-dhcp = { path = "crates/microdns-dhcp" }
 microdns-msg = { path = "crates/microdns-msg" }
 microdns-federation = { path = "crates/microdns-federation" }
+microdns-k8s = { path = "crates/microdns-k8s" }
 
 [package]
 name = "microdns"
@@ -108,6 +114,7 @@ microdns-api.workspace = true
 microdns-dhcp.workspace = true
 microdns-msg.workspace = true
 microdns-federation.workspace = true
+microdns-k8s.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true

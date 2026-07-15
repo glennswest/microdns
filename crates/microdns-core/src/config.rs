@@ -24,6 +24,44 @@ pub struct Config {
     pub ipam: Option<IpamConfig>,
     #[serde(default)]
     pub replication: Option<ReplicationConfig>,
+    #[serde(default)]
+    pub k8s: Option<K8sSourceConfig>,
+}
+
+/// Kubernetes DNS source — makes this instance authoritative for a cluster's
+/// internal zone (`cluster.local`), populated live from a kube-apiserver.
+/// This is the CoreDNS / OpenShift-DNS equivalent for the rustkube control plane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct K8sSourceConfig {
+    /// Whether the source is on. When unset, it auto-detects: enabled iff
+    /// running inside a Kubernetes pod (the way upstream in-cluster clients do).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Zone this source owns (default `cluster.local`).
+    #[serde(default = "default_cluster_domain")]
+    pub cluster_domain: String,
+    /// TTL applied to generated records.
+    #[serde(default = "default_k8s_ttl")]
+    pub ttl: u32,
+    /// Also manage reverse (PTR) zones for service/pod IPs.
+    #[serde(default = "default_true")]
+    pub manage_ptr: bool,
+    /// Endpoint source: `auto` (slices, fall back to endpoints), `slices`, or
+    /// `endpoints`.
+    #[serde(default = "default_endpoint_source")]
+    pub endpoint_source: String,
+    /// Cluster IP(s) of the in-cluster DNS service. When set, the source also
+    /// publishes apex `NS` + `ns.dns` records. Accepts IPv4 and IPv6.
+    #[serde(default)]
+    pub dns_service_ips: Vec<String>,
+    /// Explicit kubeconfig path. When unset, connection is inferred from the
+    /// environment (in-cluster service account / default kubeconfig).
+    #[serde(default)]
+    pub kubeconfig: Option<PathBuf>,
+    /// Coalesce a burst of watch events into one reconcile after this quiet
+    /// window (milliseconds).
+    #[serde(default = "default_k8s_debounce_ms")]
+    pub debounce_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -391,6 +429,18 @@ fn default_log_format() -> String {
 fn default_cache_size() -> usize {
     10000
 }
+fn default_cluster_domain() -> String {
+    "cluster.local".to_string()
+}
+fn default_k8s_ttl() -> u32 {
+    30
+}
+fn default_endpoint_source() -> String {
+    "auto".to_string()
+}
+fn default_k8s_debounce_ms() -> u64 {
+    500
+}
 fn default_check_interval() -> u64 {
     10
 }
@@ -456,6 +506,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             ipam: None,
             replication: None,
+            k8s: None,
         }
     }
 }

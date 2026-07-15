@@ -309,6 +309,51 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Start Kubernetes DNS source — makes this instance authoritative for the
+    // cluster zone (cluster.local), populated live from a kube-apiserver. Runs
+    // in-process, like CoreDNS's kubernetes plugin. Auto-enables when running
+    // inside a Kubernetes pod (the upstream in-cluster convention).
+    if let Some(ref k8s_config) = config.k8s {
+        let enabled = k8s_config.enabled.unwrap_or_else(microdns_k8s::in_cluster);
+        if enabled {
+            let endpoint_source = match k8s_config.endpoint_source.to_lowercase().as_str() {
+                "slices" => microdns_k8s::EndpointSource::Slices,
+                "endpoints" => microdns_k8s::EndpointSource::Endpoints,
+                _ => microdns_k8s::EndpointSource::Auto,
+            };
+            let dns_service_ips: Vec<std::net::IpAddr> = k8s_config
+                .dns_service_ips
+                .iter()
+                .filter_map(|s| match s.parse() {
+                    Ok(ip) => Some(ip),
+                    Err(_) => {
+                        warn!("k8s: ignoring invalid dns_service_ip '{s}'");
+                        None
+                    }
+                })
+                .collect();
+            let kc = microdns_k8s::K8sConfig {
+                cluster_domain: k8s_config.cluster_domain.clone(),
+                default_ttl: k8s_config.ttl,
+                manage_ptr: k8s_config.manage_ptr,
+                endpoint_source,
+                dns_service_ips,
+                kubeconfig: k8s_config.kubeconfig.clone(),
+                debounce_ms: k8s_config.debounce_ms,
+            };
+            info!(zone = %kc.cluster_domain, "kubernetes DNS source enabled");
+            let source = microdns_k8s::K8sSource::new(std::sync::Arc::new(db.clone()), kc);
+            let rx = shutdown_rx.clone();
+            tasks.push(tokio::spawn(async move {
+                if let Err(e) = source.run(rx).await {
+                    error!("kubernetes DNS source error: {e}");
+                }
+            }));
+        } else {
+            info!("kubernetes DNS source configured but not enabled (not in-cluster)");
+        }
+    }
+
     // Start recursive DNS server
     let mut recursor_cache = None;
     if let Some(ref recursor_config) = config.dns.recursor {
