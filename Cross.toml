@@ -1,0 +1,8 @@
+# cross-rs configuration.
+# The build scripts in microdns-msg / microdns-federation use prost-build,
+# which needs `protoc` at build time. The cross container images (Debian-based)
+# don't ship it, so install it in the build container before compiling.
+[build]
+pre-build = [
+    "apt-get update && apt-get install -y --no-install-recommends protobuf-compiler",
+]
