@@ -1,0 +1,140 @@
+# MicroDNS g16 Instance
+# IP: 192.168.31.252 (mkube-managed)
+# Serves: g16.lo, reverse 16-31.168.192; DHCP for 192.168.16.0/20
+#
+# g16 is the flat network for dsw1 (Dell S5148F-ON) -- one switch, one range,
+# no VLANs. It is a /20, not a /24, which makes this instance different from
+# every other one in two ways:
+#
+#   1. Services live at the TOP of the range, not the bottom, so the DHCP pool
+#      can grow without colliding with them. Hence .31.252 rather than .16.252,
+#      while still preserving the ".252 = DNS" convention.
+#
+#   2. A /20 spans SIXTEEN reverse zones (16.168.192.in-addr.arpa through
+#      31.168.192.in-addr.arpa), because in-addr.arpa only delegates on octet
+#      boundaries. They are all listed below. MicroDNS auto-creates whichever
+#      one a host needs on A-record create (sync_reverse_record ->
+#      sync_ptr_for_a -> ensure_reverse_zone), so they need no pre-seeding --
+#      the entries here exist so queries arriving from other networks resolve.
+
+[instance]
+id = "microdns-g16"
+mode = "standalone"
+
+[[instance.peers]]
+id = "microdns-main"
+addr = "192.168.1.252"
+
+[[instance.peers]]
+id = "microdns-g10"
+addr = "192.168.10.252"
+
+[[instance.peers]]
+id = "microdns-g11"
+addr = "192.168.11.252"
+
+[[instance.peers]]
+id = "microdns-gt"
+addr = "192.168.200.199"
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:53"
+cache_size = 10000
+
+[dns.recursor.forward_zones]
+# gw network
+"gw.lo" = ["192.168.1.252:53"]
+"1.168.192.in-addr.arpa" = ["192.168.1.252:53"]
+# g8 network
+"g8.lo" = ["192.168.8.252:53"]
+"8.168.192.in-addr.arpa" = ["192.168.8.252:53"]
+# g9 network
+"g9.lo" = ["192.168.9.252:53"]
+"9.168.192.in-addr.arpa" = ["192.168.9.252:53"]
+# g10 network
+"g10.lo" = ["192.168.10.252:53"]
+"10.168.192.in-addr.arpa" = ["192.168.10.252:53"]
+# g11 network
+"g11.lo" = ["192.168.11.252:53"]
+"11.168.192.in-addr.arpa" = ["192.168.11.252:53"]
+# gt network
+"gt.lo" = ["192.168.200.199:53"]
+"200.168.192.in-addr.arpa" = ["192.168.200.199:53"]
+# local reverse -- all sixteen /24s of the /20 (for queries from other zones)
+"16.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"17.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"18.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"19.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"20.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"21.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"22.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"23.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"24.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"25.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"26.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"27.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"28.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"29.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"30.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+"31.168.192.in-addr.arpa" = ["192.168.31.252:53"]
+
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+
+# Pool stops at 192.168.30.254 -- 192.168.31.0/24 is the reserved service
+# range and must never be handed out.
+[[dhcp.v4.pools]]
+range_start = "192.168.16.100"
+range_end = "192.168.30.254"
+subnet = "192.168.16.0/20"
+gateway = "192.168.16.1"
+dns = ["192.168.31.252"]
+domain = "g16.lo"
+domain_search = ["g16.lo", "gt.lo", "gw.lo", "g10.lo", "g11.lo", "g8.lo", "g9.lo"]
+lease_time_secs = 600
+
+# Static reservations: none yet. dsw1 itself is statically configured at
+# 192.168.16.2 in ../dellsw/config/dsw1.os10, not DHCP-assigned.
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = "g16.lo"
+# Advisory only for this instance. MicroDNS derives the actual reverse zone
+# from each host's address (reverse_zone_v4), so leases landing anywhere in
+# 16-31.168.192 get their PTR in the correct zone regardless of this value.
+reverse_zone_v4 = "16.168.192.in-addr.arpa"
+reverse_zone_v6 = ""
+default_ttl = 300
+
+[ipam]
+enabled = true
+
+# IPAM allocations come out of the service range, above the DHCP pool.
+[[ipam.pools]]
+name = "g16"
+subnet = "192.168.16.0/20"
+range_start = "192.168.31.10"
+range_end = "192.168.31.199"
+gateway = "192.168.16.1"
+bridge = "bridge-g16"
+
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+dashboard_listen = "0.0.0.0:80"
+
+[api.grpc]
+enabled = true
+listen = "0.0.0.0:50051"
+
+[database]
+path = "/data/microdns.redb"
+
+[logging]
+level = "info"
+format = "json"
+
+[messaging]
+backend = "noop"
