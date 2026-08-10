@@ -478,9 +478,19 @@ GET    /api/v1/leases                         List active DHCP leases
 GET    /api/v1/health                         Instance health check
 ```
 
-Response:
+Returns **200** only when the database is readable (a cheap zone-count read
+succeeds — zero zones is healthy). If the database is missing, locked, or
+corrupt, returns **503** naming the failing check. Consumers such as mkube
+gate all DNS operations on this endpoint.
+
+Response (200):
 ```json
-{"status": "ok", "version": "0.1.0", "zones": 12}
+{"status": "ok", "version": "0.4.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
+```
+
+Response (503):
+```json
+{"status": "unhealthy", "check": "database", "error": "..."}
 ```
 
 ### Watch (SSE)

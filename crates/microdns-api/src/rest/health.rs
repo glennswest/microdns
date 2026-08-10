@@ -1,10 +1,12 @@
-use crate::security::internal_error;
 use crate::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
+use serde_json::json;
+use tracing::error;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/health", get(health_check))
@@ -14,18 +16,31 @@ pub fn router() -> Router<AppState> {
 struct HealthResponse {
     status: String,
     version: String,
-    zones: usize,
+    zones: u64,
     uptime_seconds: u64,
     uptime: String,
 }
 
-async fn health_check(
-    State(state): State<AppState>,
-) -> Result<Json<HealthResponse>, (StatusCode, String)> {
-    let zones = state
-        .db
-        .list_zones()
-        .map_err(internal_error)?;
+async fn health_check(State(state): State<AppState>) -> Response {
+    // 200 must mean "this instance can actually serve records" — consumers
+    // (mkube) gate all DNS operations on this endpoint. A database that is
+    // missing, locked, or corrupt returns 503 naming the failing check.
+    // An empty database (zero zones) is healthy.
+    let zones = match state.db.zone_count() {
+        Ok(n) => n,
+        Err(e) => {
+            error!("health check: database read failed: {e}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "status": "unhealthy",
+                    "check": "database",
+                    "error": e.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
 
     let elapsed = state.started_at.elapsed();
     let secs = elapsed.as_secs();
@@ -44,11 +59,12 @@ async fn health_check(
         format!("{}s", seconds)
     };
 
-    Ok(Json(HealthResponse {
+    Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        zones: zones.len(),
+        zones,
         uptime_seconds: secs,
         uptime,
-    }))
+    })
+    .into_response()
 }

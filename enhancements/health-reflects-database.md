@@ -1,5 +1,9 @@
 # Enhancement: /api/v1/health should reflect database readability
 
+**Status:** IMPLEMENTED 2026-08-09 — `Db::zone_count()` (cheap redb `len()`,
+no deserialization) gates `/api/v1/health`; DB read failure → 503
+`{"status":"unhealthy","check":"database","error":"..."}`. Zero zones → 200.
+
 **Requested by:** mkube (2026-08-10)
 **Context:** mkube v6.2.1 replaced its DNS-client failure blacklist with an
 alive gate on `GET /api/v1/health` — before touching an endpoint, mkube probes

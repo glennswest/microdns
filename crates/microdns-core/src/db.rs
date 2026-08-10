@@ -4,7 +4,7 @@ use crate::types::{
     QueryStat, Record, RecordType, ReplicationMeta, Zone,
 };
 use chrono::Utc;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -147,6 +147,14 @@ impl Db {
             }
             None => Ok(None),
         }
+    }
+
+    /// Cheap readability probe for health checks: counts zones without
+    /// deserializing any of them. Zero zones is a valid, healthy state.
+    pub fn zone_count(&self) -> Result<u64> {
+        let read_txn = self.inner.begin_read()?;
+        let zones = read_txn.open_table(ZONES_TABLE)?;
+        Ok(zones.len()?)
     }
 
     pub fn list_zones(&self) -> Result<Vec<Zone>> {

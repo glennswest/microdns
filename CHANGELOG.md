@@ -13,6 +13,9 @@
 
 ## [Unreleased]
 
+### 2026-08-09
+- **feat(api):** `/api/v1/health` now reflects database readability (enhancement request from mkube, `enhancements/health-reflects-database.md`). 200 is returned only when a cheap zone-count read succeeds (new `Db::zone_count()` using redb table `len()` — no deserialization; zero zones is healthy). A missing/locked/corrupt database returns 503 with `{"status":"unhealthy","check":"database","error":"..."}`. mkube v6.2.1 gates all DNS operations per instance on this probe (15s TTL, 1.5s timeout)
+
 ### 2026-05-03
 - **feat:** Persisted "last queried" timestamp per `(fqdn, type)` — every DNS query landing on the auth server bumps an in-memory `QueryTracker` (lock-free `DashMap`); a periodic 60 s flush task writes dirty rows to a new `query_stats` redb table. Hydrated on startup so the dashboard view survives a quick restart. Surfaced in `/api/v1/lb/resolutions` (`last_queried_at`, `query_count`) and rendered in the Resolution panel under each FQDN ("Last queried 2m ago · 4,182 total"). Also useful operationally to spot stale records that nothing actually resolves
 
