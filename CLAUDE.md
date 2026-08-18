@@ -100,11 +100,17 @@ Each instance forwards queries for peer zones to the peer's DNS server. If the p
 - **Cross-network forwarding**: All instances forward to all peer zones including reverse and utility zones
 - **stormdbase migration**: Container base switched from scratch to stormdbase for process supervision, SSH, health probes
 
-## Zone Transfer + NOTIFY (shipped in v0.6.0)
+## Zone Transfer + NOTIFY (shipped in v0.6.0, API-managed in v0.7.0)
 
-Primary announces, secondary mirrors. `[dns.auth] notify` lists secondaries to
-tell when a zone changes; `[[dns.auth.secondary]]` lists zones to mirror and the
-primary to pull them from. See `docs/zone-transfer.md`.
+Primary announces, secondary mirrors — for the backup DNS server. Settings live
+in redb behind `GET/PUT/DELETE /api/v1/zone-transfer/config` (`allow_transfer`,
+`notify`, `secondary`) and are applied live; `[dns.auth]` seeds them on first
+run only, because mkube regenerates the TOML. See `docs/zone-transfer.md`.
+
+**Not yet pointed at anything.** The backup server it was built for still needs
+identifying — do not use gt as the secondary. Deployed instances currently hold
+only the seeded defaults: RFC1918 AXFR ACL, no notify targets, no mirrored
+zones.
 
 The hook that makes the primary side complete is `Db::increment_soa_serial` —
 every writer ends a change there, so announcing from that one call covers the
@@ -149,4 +155,6 @@ Remaining:
 - [ ] DNS-over-TLS (DoT) support
 - [ ] DNSSEC signing
 - [ ] Automated integration tests for cross-network DNS resolution
+- [ ] Point zone transfer at the real backup DNS server (primary `notify` +
+      secondary `secondary` entry) once the host is identified
 - [ ] mDNS: optional reverse (PTR) records for discovered addresses
