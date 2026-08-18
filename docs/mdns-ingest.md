@@ -25,11 +25,31 @@ normal unicast DNS.
 
 ## Enabling it
 
+Configuration lives in the database and is managed through the API. That is
+deliberate: on mkube-managed instances `microdns.toml` is generated from a
+Network CRD, so a `[mdns]` block added there is discarded the next time the
+config is regenerated. The stored config survives it.
+
+```bash
+curl -s -X PUT http://192.168.9.252:8080/api/v1/mdns/config \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled": true, "zone": "mdns.g9.lo"}'
+```
+
+The running source picks the change up within ten seconds — starting, stopping
+or re-homing its zone with no restart. `DELETE /api/v1/mdns/config` turns it off
+and withdraws every name it published.
+
+A `[mdns]` block in the config file is still read, but only to **seed** the
+stored value the first time, the way DHCP pools and forwarders are seeded:
+
 ```toml
 [mdns]
 enabled = true
 zone = "mdns.g9.lo"     # required — where discovered names land
 ```
+
+Once the value is stored, the file no longer has a say — edit it through the API.
 
 A device announcing `teslatracker-52c4.local` on that segment becomes:
 
@@ -59,6 +79,10 @@ ask a unicast resolver, so those queries would never arrive.
 
 ## Configuration
 
+Every key below is a field of the `PUT /api/v1/mdns/config` body (and of the
+bootstrap `[mdns]` block). `PUT` replaces the whole object, so send the full
+config, not a fragment.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Off unless asked for — an upgrade must not start publishing whatever is shouting on the LAN |
@@ -76,11 +100,11 @@ ask a unicast resolver, so those queries would never arrive.
 
 Filtering a noisy network down to what matters:
 
-```toml
-[mdns]
-enabled = true
-zone = "mdns.g9.lo"
-deny = ["chromecast-*", "*._sleep-proxy._udp"]
+```bash
+curl -s -X PUT http://192.168.9.252:8080/api/v1/mdns/config \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled": true, "zone": "mdns.g9.lo",
+       "deny": ["chromecast-*", "*._sleep-proxy._udp"]}'
 ```
 
 ## How discovery works
@@ -151,6 +175,9 @@ name and re-add it seconds later.
 ## Operating it
 
 ```bash
+# The stored config (404 until the source has been configured)
+curl -s http://192.168.9.252:8080/api/v1/mdns/config
+
 # Counters, cache size, service types seen on the segment
 curl -s http://192.168.9.252:8080/api/v1/mdns/status
 

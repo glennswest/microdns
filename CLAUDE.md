@@ -100,13 +100,24 @@ Each instance forwards queries for peer zones to the peer's DNS server. If the p
 - **Cross-network forwarding**: All instances forward to all peer zones including reverse and utility zones
 - **stormdbase migration**: Container base switched from scratch to stormdbase for process supervision, SSH, health probes
 
+## Zone Transfer + NOTIFY (shipped in v0.6.0)
+
+Primary announces, secondary mirrors. `[dns.auth] notify` lists secondaries to
+tell when a zone changes; `[[dns.auth.secondary]]` lists zones to mirror and the
+primary to pull them from. See `docs/zone-transfer.md`.
+
+The hook that makes the primary side complete is `Db::increment_soa_serial` —
+every writer ends a change there, so announcing from that one call covers the
+API, DHCP, mDNS, Kubernetes and reverse-PTR sync without any of them knowing
+NOTIFY exists. Anything new that changes zone data should keep calling it.
+
 ## mDNS Ingest (issue #8, shipped in v0.5.0)
 
 `crates/microdns-mdns` listens on 224.0.0.251:5353, learns `.local` names
 announced on the instance's own segment, and publishes them into a configured
 zone as authoritative records — so cross-subnet clients resolve names that
-multicast (IP TTL 1) can never reach them. Off by default; `[mdns] enabled`
-plus a `zone` turns it on. Design and operational notes: `docs/mdns-ingest.md`.
+multicast (IP TTL 1) can never reach them. Off by default; enable with
+`PUT /api/v1/mdns/config`. Design and operational notes: `docs/mdns-ingest.md`.
 
 Two invariants worth remembering before changing anything here:
 
@@ -115,13 +126,17 @@ Two invariants worth remembering before changing anything here:
   record in the same zone is never deleted and never shadowed.
 - **Withdrawal waits out a 45 s startup grace.** The cache is empty after a
   restart because nothing has announced yet, not because devices left.
+- **Config lives in redb, not the TOML.** mkube regenerates `microdns.toml`
+  from a Network CRD, so a `[mdns]` block added there is discarded within
+  minutes (observed on g9). The TOML block only seeds the stored value; the
+  API is the source of truth, and the running source follows it live.
 
 Remaining:
 
-- [ ] Deploy to the g9/g8 instances and confirm `teslatracker-52c4` resolves
-      cross-subnet (the case issue #8 was filed for)
-- [ ] mkube: `[mdns]` block support in generated per-network TOML (mkube
-      regenerates these configs, so a hand-added block would be overwritten)
+- [ ] Confirm `teslatracker-52c4` resolves cross-subnet (the case issue #8 was
+      filed for) — needs the device to be announcing on g9
+- [ ] mkube#22: `[mdns]` in generated TOML — now optional, since the API route
+      works without it
 
 ## TODO
 
@@ -134,5 +149,4 @@ Remaining:
 - [ ] DNS-over-TLS (DoT) support
 - [ ] DNSSEC signing
 - [ ] Automated integration tests for cross-network DNS resolution
-- [ ] Wire the NOTIFY sender (`microdns-auth::notify`) into the record-write path
 - [ ] mDNS: optional reverse (PTR) records for discovered addresses

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.0] - 2026-08-18
+
+### Added
+- **feat(auth):** Secondary zones — `[[dns.auth.secondary]]` mirrors a zone from a primary over AXFR, driven by inbound NOTIFY and by a per-zone refresh timer. A check asks the primary for the zone's SOA and transfers only when the serial differs (RFC 1982 arithmetic, so wrapped serials compare correctly); an unreachable primary is a warning, not an error, and the existing copy keeps being served. Inbound NOTIFY (RFC 1996) is answered on UDP and TCP, and believed only from that zone's configured primary — a NOTIFY is an instruction to go and transfer a zone, so accepting one from anywhere would let any host aim this instance's transfers. Documented in `docs/zone-transfer.md`
+- **feat(auth):** Outbound NOTIFY is now wired to every write. `Db::increment_soa_serial` is the one call every writer makes to finish a change, so a zone-change hook there covers the REST API, DHCP registration, the mDNS and Kubernetes sources and reverse-PTR sync alike. Changes are collapsed over a two-second window to one NOTIFY per zone, since a single edit can bump a serial two or three times
+- **feat(mdns):** mDNS ingest configuration moved into the database (`runtime_config` section `mdns`) with `GET`/`PUT`/`DELETE /api/v1/mdns/config`. The source follows the stored config live — starting, stopping and re-homing its zone without a restart, and withdrawing what it published when turned off. A `[mdns]` block in the config file now only seeds the stored value the first time. This is what makes the feature usable on mkube-managed instances, where `microdns.toml` is regenerated from a Network CRD and a hand-added block does not survive
+
+### Changed
+- **refactor(auth):** An inbound AXFR now upserts the zone and replaces its records in one pass instead of deleting and rebuilding it. The old path left a window in which the server answered "no such zone" for a zone it held a good copy of — on a secondary, exactly while the primary was being changed. `TransferResult` also carries the transferred `serial`
+
 ## [0.5.0] - 2026-08-18
 
 ### Added
