@@ -43,11 +43,21 @@ pub struct MdnsSourceConfig {
     /// happens to be shouting on their LAN because they upgraded.
     #[serde(default)]
     pub enabled: bool,
-    /// Zone discovered names are published into. One flat domain shared by
-    /// every instance (the default) means a name resolves the same way from
-    /// anywhere, with no need to know which network the device sits on.
+    /// The one zone discovered names land in, whichever network heard them.
+    /// A device keeps the address it has on its own segment; only the name is
+    /// shared, so `something.mdns.lo` means the same thing everywhere.
     #[serde(default = "default_mdns_zone")]
     pub zone: String,
+    /// Address of the instance that holds the zone, as `ip` or `ip:port`
+    /// (DNS port, default 53).
+    ///
+    /// Empty means *this* instance holds it: it assembles the zone from its own
+    /// discoveries and from what every other instance reports, and serves it.
+    /// Set on every other instance, which then only listens and reports, and
+    /// points its own clients at the holder for that zone. One zone, one copy,
+    /// one place to look.
+    #[serde(default)]
+    pub holder: String,
     /// Floor for the announced TTL. Responses to a legacy query carry a 10 s
     /// TTL (RFC 6762 §6.7); honouring that literally would churn the zone.
     #[serde(default = "default_mdns_ttl_min")]
@@ -87,16 +97,6 @@ pub struct MdnsSourceConfig {
     /// the zone.
     #[serde(default = "default_mdns_debounce")]
     pub debounce_secs: u64,
-    /// Sibling instances to mirror discoveries from, as `ip` or `ip:port`
-    /// (API port, default 8080). Empty derives them from the DNS forwarders
-    /// this instance already has — one per sibling network — so a new network
-    /// needs no mDNS config of its own.
-    #[serde(default)]
-    pub peers: Vec<String>,
-    /// How often to pull each peer's discoveries. 0 turns mirroring off, which
-    /// leaves this instance publishing only what it can hear itself.
-    #[serde(default = "default_mdns_peer_sync")]
-    pub peer_sync_secs: u64,
 }
 
 /// Kubernetes DNS source — makes this instance authoritative for a cluster's
@@ -639,9 +639,6 @@ fn default_secondary_refresh() -> u64 {
 }
 fn default_mdns_zone() -> String {
     "mdns.lo".to_string()
-}
-fn default_mdns_peer_sync() -> u64 {
-    30
 }
 fn default_mdns_ttl_min() -> u32 {
     60

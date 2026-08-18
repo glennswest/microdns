@@ -106,7 +106,6 @@ mod tests {
             last_seen: now,
             expires_at: now + Duration::seconds(i64::from(ttl)),
             from: "192.168.9.134".parse::<IpAddr>().unwrap(),
-            via: None,
             refresh_sent: false,
         }
     }

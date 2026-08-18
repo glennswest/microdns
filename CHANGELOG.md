@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0] - 2026-08-18
+
+### Changed
+- **feat(mdns):** One shared `mdns.lo` zone, held in one place. A single instance holds the zone; every other instance listens on its own segment and registers what it hears **into that instance** over the REST API, then points its own clients there for that zone. Replaces the per-instance copies of 0.8.0 and the per-network subzones (`mdns.g9.lo`) of 0.5.0: a device keeps the address it has on its own network, and its name is simply `something.mdns.lo` from everywhere. Set `holder` to the address of the instance holding the zone; leave it empty on that instance
+- **feat(api):** `POST /zones/{id}/records` accepts an optional `source`, so a record registered over the API by an automatic source stays labelled as such — which is what lets a reporting instance withdraw its own names later without touching anyone else's
+- **removed:** the peer-mirroring machinery (`peers`, `peer_sync_secs`) added in 0.8.0. There is one copy of the zone now, so there is nothing to mirror
+
 ## [0.8.0] - 2026-08-18
 
 ### Changed

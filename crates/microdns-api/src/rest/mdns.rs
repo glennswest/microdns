@@ -5,10 +5,10 @@
 //! actually heard on the wire, including names that config filtered out, which
 //! is what you need when a device is announcing but not resolving.
 //!
-//! `/mdns/discovered` deliberately reports only what *this* instance heard, not
-//! what it mirrored from siblings. Sibling instances poll this endpoint to build
-//! the shared zone, and reporting mirrored names here would have them echoing
-//! each other's copies back and forth.
+//! `/mdns/discovered` reports what *this* instance heard on its own segment.
+//! The zone those names land in may well be held by another instance — see
+//! `holder` in `/mdns/status` — since there is one shared `mdns.lo` for the
+//! whole network rather than one per segment.
 
 use crate::security::internal_error;
 use crate::AppState;
@@ -37,12 +37,8 @@ struct StatusResponse {
     zone: Option<String>,
     /// Entries currently held in the discovery cache.
     cached: usize,
-    /// Of those, the ones this instance heard on its own segment.
-    heard_here: usize,
-    /// Of those, the ones mirrored from sibling instances.
-    mirrored: usize,
-    /// Per-sibling view: address, names held, last successful sync.
-    peers: Vec<PeerStatus>,
+    /// Where the zone lives: this instance, or the address holding it.
+    holder: Option<String>,
     /// Entries that pass the allow/deny filters and are published.
     published: usize,
     /// DNS-SD service types seen on the segment.
@@ -53,13 +49,6 @@ struct StatusResponse {
     expired: u64,
     queries_sent: u64,
     last_packet_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize)]
-struct PeerStatus {
-    peer: String,
-    entries: usize,
-    synced_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -96,9 +85,7 @@ async fn mdns_status(State(state): State<AppState>) -> Json<StatusResponse> {
             enabled: false,
             zone: None,
             cached: 0,
-            heard_here: 0,
-            mirrored: 0,
-            peers: Vec::new(),
+            holder: None,
             published: 0,
             service_types: Vec::new(),
             packets: 0,
@@ -113,23 +100,16 @@ async fn mdns_status(State(state): State<AppState>) -> Json<StatusResponse> {
     let config = handle.config();
     let zone = handle.zone();
     let cache = handle.cache.lock().unwrap();
-    let published =
-        microdns_mdns::translate::desired(cache.all_entries().cloned(), &config).len();
+    let published = microdns_mdns::translate::desired(cache.entries().cloned(), &config).len();
     Json(StatusResponse {
         enabled: zone.is_some(),
         zone,
-        cached: cache.local_len() + cache.peer_len(),
-        heard_here: cache.local_len(),
-        mirrored: cache.peer_len(),
-        peers: cache
-            .peer_summary()
-            .into_iter()
-            .map(|(peer, entries, synced_at)| PeerStatus {
-                peer,
-                entries,
-                synced_at,
-            })
-            .collect(),
+        holder: if config.is_holder() {
+            None
+        } else {
+            Some(config.holder.clone())
+        },
+        cached: cache.len(),
         published,
         service_types: cache.service_types(),
         packets: cache.stats.packets,

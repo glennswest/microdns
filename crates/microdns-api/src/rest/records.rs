@@ -68,6 +68,13 @@ struct CreateRecordRequest {
     #[serde(default = "default_true")]
     enabled: bool,
     health_check: Option<HealthCheck>,
+    /// What is creating this record. Defaults to `manual`, which is right for
+    /// anyone editing by hand; an automatic source registering a record it will
+    /// later withdraw — a MicroDNS instance putting an mDNS discovery into the
+    /// shared zone on another instance — says so here, so ownership survives
+    /// the trip over the API.
+    #[serde(default)]
+    source: RecordSource,
 }
 
 #[derive(Deserialize)]
@@ -143,9 +150,7 @@ async fn create_record(
         data: req.data,
         enabled: req.enabled,
         health_check: req.health_check,
-        // Anything created through the API is operator-curated, so an
-        // automatic source may neither prune it nor shadow it.
-        source: RecordSource::Manual,
+        source: req.source,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

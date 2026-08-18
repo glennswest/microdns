@@ -49,11 +49,8 @@ pub struct MdnsConfig {
     pub interfaces: Vec<Ipv4Addr>,
     /// Quiet window before a burst of announcements is written to the zone.
     pub debounce_secs: u64,
-    /// Sibling instances to mirror discoveries from. Empty derives them from
-    /// this instance's DNS forwarders.
-    pub peers: Vec<String>,
-    /// How often to pull each sibling. 0 turns mirroring off.
-    pub peer_sync_secs: u64,
+    /// Address of the instance holding the zone. Empty means this one does.
+    pub holder: String,
 }
 
 impl Default for MdnsConfig {
@@ -72,8 +69,7 @@ impl Default for MdnsConfig {
             port: MDNS_PORT,
             interfaces: Vec::new(),
             debounce_secs: 5,
-            peers: Vec::new(),
-            peer_sync_secs: 30,
+            holder: String::new(),
         }
     }
 }
@@ -113,13 +109,30 @@ impl From<&microdns_core::config::MdnsSourceConfig> for MdnsConfig {
             port: MDNS_PORT,
             interfaces,
             debounce_secs: c.debounce_secs,
-            peers: c.peers.clone(),
-            peer_sync_secs: c.peer_sync_secs,
+            holder: c.holder.trim().to_string(),
         }
     }
 }
 
 impl MdnsConfig {
+    /// Whether this instance owns the zone, rather than reporting to another.
+    pub fn is_holder(&self) -> bool {
+        self.holder.is_empty()
+    }
+
+    /// The holder as a DNS address, for the forwarder a reporting instance
+    /// points its own clients at.
+    pub fn holder_dns_addr(&self) -> Option<String> {
+        if self.holder.is_empty() {
+            return None;
+        }
+        Some(if self.holder.contains(':') {
+            self.holder.clone()
+        } else {
+            format!("{}:53", self.holder)
+        })
+    }
+
     /// Clamp an announced TTL into the configured window.
     pub fn clamp_ttl(&self, ttl: u32) -> u32 {
         ttl.clamp(self.ttl_min.min(self.ttl_max), self.ttl_max)

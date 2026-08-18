@@ -36,8 +36,8 @@
 pub mod cache;
 pub mod config;
 pub mod parse;
-pub mod peers;
 pub mod publish;
+pub mod sink;
 pub mod socket;
 pub mod translate;
 
@@ -166,7 +166,7 @@ impl MdnsSource {
                             // Whatever was published came from this instance's
                             // authority. If the new config does not cover it,
                             // it must not be left behind claiming to be current.
-                            self.withdraw(&config);
+                            self.withdraw(&config).await;
                             info!("mdns: configuration changed; reloading");
                         }
                         Err(e) => {
@@ -184,8 +184,8 @@ impl MdnsSource {
                 other => {
                     if let Some(config) = other {
                         // Turned off explicitly: take the discovered names with
-                        // it rather than leaving a frozen copy behind.
-                        self.withdraw(&config);
+                        // it rather than leaving them behind.
+                        self.withdraw(&config).await;
                     }
                     if self.wait_for_change(&mut shutdown, None).await {
                         return Ok(());
@@ -242,18 +242,22 @@ impl MdnsSource {
         }
     }
 
-    /// Remove everything this source published under `config`.
-    fn withdraw(&self, config: &MdnsConfig) {
-        match publish::Publisher::new(self.db.clone(), config)
-            .and_then(|publisher| publisher.withdraw_all())
-        {
+    /// Remove everything this instance put in the zone, wherever it is held.
+    async fn withdraw(&self, config: &MdnsConfig) {
+        let sink = match sink::ZoneSink::new(self.db.clone(), config) {
+            Ok(sink) => sink,
+            Err(e) => {
+                warn!("mdns: could not reach {} to withdraw: {e}", config.zone);
+                return;
+            }
+        };
+        match sink.withdraw_all().await {
             Ok(0) => {}
-            Ok(n) => info!(
-                "mdns: withdrew {n} discovered record(s) from {}",
-                config.zone
-            ),
-            Err(e) => warn!("mdns: could not withdraw records from {}: {e}", config.zone),
+            Ok(n) => info!("mdns: withdrew {n} discovered name(s) from {}", config.zone),
+            Err(e) => warn!("mdns: could not withdraw names from {}: {e}", config.zone),
         }
+        // Stop pointing this instance's clients at a zone it no longer feeds.
+        sink::remove_forwarder(&self.db, config);
     }
 
     /// One listening session under a fixed configuration.
@@ -278,12 +282,15 @@ impl MdnsSource {
             None
         };
 
-        let mut publisher = publish::Publisher::new(self.db.clone(), config)?;
+        let mut sink = sink::ZoneSink::new(self.db.clone(), config)?;
+        // A reporting instance answers its own clients for the shared zone by
+        // pointing them at whoever holds it.
+        sink::ensure_forwarder(&self.db, config);
         info!(
-            "mdns: listening on {}:{} — publishing discovered .local names into {}",
+            "mdns: listening on {}:{} — registering discovered .local names in {}",
             config.bind,
             port,
-            publisher.zone_name()
+            sink.describe()
         );
 
         // Ask straight away rather than waiting a full interval: at startup the
@@ -316,18 +323,6 @@ impl MdnsSource {
         config_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         config_tick.tick().await;
 
-        // Mirror what the other instances can hear, so this one zone answers
-        // for every network rather than only for this segment.
-        let sync = peers::PeerSync::new(&self.instance_id);
-        let mut peer_tick = tokio::time::interval(Duration::from_secs(
-            if config.peer_sync_secs == 0 {
-                86_400
-            } else {
-                config.peer_sync_secs
-            },
-        ));
-        peer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
         let mut buf_v4 = vec![0u8; socket::MAX_PACKET];
         let mut buf_v6 = vec![0u8; socket::MAX_PACKET];
         let mut dirty = false;
@@ -359,16 +354,14 @@ impl MdnsSource {
                         let prune = started.elapsed() >= STARTUP_GRACE;
                         let desired = {
                             let cache = self.cache.lock().unwrap();
-                            translate::desired(cache.all_entries().cloned(), config)
+                            translate::desired(cache.entries().cloned(), config)
                         };
-                        match publisher.apply(&desired, prune) {
+                        match sink.apply(&desired, prune).await {
                             Ok(_) => dirty = false,
-                            // Keep the dirty flag set so a transient database
-                            // error is retried on the next tick.
-                            Err(e) => warn!(
-                                "mdns: publishing to {} failed: {e}",
-                                publisher.zone_name()
-                            ),
+                            // Keep the dirty flag set so a transient failure —
+                            // a database error, or the holder being restarted —
+                            // is retried on the next tick.
+                            Err(e) => warn!("mdns: registering in {} failed: {e}", config.zone),
                         }
                     }
 
@@ -384,23 +377,6 @@ impl MdnsSource {
                         questions.push((service, RecordType::PTR));
                     }
                     self.send_queries(config, &v4, &v6, &questions).await;
-                }
-                _ = peer_tick.tick(), if config.peer_sync_secs > 0 => {
-                    let peer_list = peers::resolve_peers(&self.db, &config.peers);
-                    for peer in &peer_list {
-                        // A peer that cannot be reached keeps whatever it last
-                        // told us; those names expire on their own TTL rather
-                        // than vanishing because one poll failed.
-                        if let Some(entries) = sync.poll(peer).await {
-                            let count = entries.len();
-                            let mut cache = self.cache.lock().unwrap();
-                            cache.set_peer_entries(peer, entries, Utc::now());
-                            debug!("mdns: mirrored {count} name(s) from {peer}");
-                        }
-                    }
-                    if !peer_list.is_empty() {
-                        dirty = true;
-                    }
                 }
                 _ = config_tick.tick() => {
                     if self.stored_config().as_ref() != Some(config) {
@@ -519,8 +495,7 @@ mod tests {
             bind: "0.0.0.0".into(),
             interfaces: vec![],
             debounce_secs: 5,
-            peers: vec![],
-            peer_sync_secs: 0,
+            holder: String::new(),
         }
     }
 
@@ -700,7 +675,7 @@ mod tests {
         })
         .unwrap();
 
-        MdnsSource::new(db.clone()).withdraw(&config);
+        MdnsSource::new(db.clone()).withdraw(&config).await;
 
         let records = db.list_records(&zone.id).unwrap();
         assert_eq!(records.len(), 1);
