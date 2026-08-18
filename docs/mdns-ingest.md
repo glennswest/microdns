@@ -68,34 +68,44 @@ resolvable from every instance, not just g9's.
 ### How one domain covers every network
 
 mDNS is only audible on the segment it was announced on, so each instance hears
-a different slice. Rather than making that slicing visible in the name, each
-instance mirrors what its siblings heard:
+a different slice. Rather than making that slicing visible in the name, one
+instance **holds** the zone and every other instance **registers into it**:
 
 ```
-g9  hears teslatracker-52c4  ──┐
-g8  hears glenns-macbook-air ──┼─→ every instance holds all of it → mdns.lo
-gw  hears cap01              ──┘
+g8  hears glenns-mac-mini ──┐
+g9  hears teslatracker-52c4 ─┼─→  dns.mdns.lo  holds mdns.lo
+gw  hears cap01            ──┘         ↑
+                        every instance forwards mdns.lo here
 ```
 
-Every instance therefore answers for the whole fleet out of its own database —
-no cross-instance lookup when a client asks, and no single instance whose loss
-takes the domain down. Mirroring is a pull (`GET /api/v1/mdns/discovered` on
-each sibling, every `peer_sync_secs`), and a sibling only ever reports what it
-heard *itself*, which is what stops two instances echoing copies back and forth.
+A reporting instance holds no copy of the zone at all. It writes what it hears
+straight into the holder over the REST API — records land with `source: mdns` —
+and points its own clients at the holder for that zone, so a lookup arriving
+anywhere is answered by the one box that has the names.
 
-Siblings come from the DNS forwarders the instance already has — one per sibling
-network — so adding a network needs no mDNS configuration. Set `peers`
-explicitly to override that.
+Each instance remembers the record ids it created, so it withdraws its own names
+when a device goes away and never touches another segment's. That memory is
+persisted locally, so a restart does not orphan anything.
 
-A peer that cannot be reached keeps whatever it last reported; those names age
-out on their own TTL rather than disappearing because one poll failed.
+The holder is set per instance:
+
+```bash
+# the instance that holds the zone
+-d '{"enabled": true, "zone": "mdns.lo"}'
+
+# every other instance
+-d '{"enabled": true, "zone": "mdns.lo", "holder": "192.168.12.252"}'
+```
+
+The holder's API is expected on 8080 and its DNS on 53, as every instance
+serves.
 
 ### Choosing a different shape
 
-`zone` can be anything. Per-network zones (`mdns.g9.lo` on g9, `mdns.g8.lo` on
-g8) still work if you want the network visible in the name — but then each
-instance answers only for its own segment, and callers have to know where a
-device lives. Set `peer_sync_secs` to 0 for that.
+`zone` can be anything, and an instance with no `holder` set simply keeps what
+it hears in its own copy. That gives per-network zones (`mdns.g9.lo` on g9) if
+you want the network visible in the name — but then callers have to know which
+segment a device lives on, which is the bookkeeping this exists to remove.
 
 Note that publishing into a zone literally named `local` is *not* useful in
 practice: macOS and systemd-resolved route `.local` to multicast only and never
@@ -128,8 +138,7 @@ config, not a fragment.
 | `bind` | `"0.0.0.0"` | Listener address |
 | `interfaces` | `[]` | Interface addresses to join the group on. Empty lets the kernel choose |
 | `debounce_secs` | `5` | Quiet window before a burst of announcements is written to the zone |
-| `peers` | `[]` | Sibling instances to mirror from (`ip` or `ip:port`, API port 8080). Empty derives them from this instance's DNS forwarders |
-| `peer_sync_secs` | `30` | How often to pull each sibling. `0` publishes only what this instance can hear |
+| `holder` | `""` | Address of the instance holding the zone. Empty means this instance holds it |
 
 Filtering a noisy network down to what matters:
 
@@ -223,6 +232,19 @@ curl -s http://192.168.9.252:8080/api/v1/mdns/discovered
 *published*. When a device announces but does not resolve, the difference
 between those two is the answer — `published_as: null` means a filter dropped
 it.
+
+## As deployed here
+
+| | |
+|---|---|
+| Network | `mdns` — `192.168.12.0/24`, `bridge-mdns`, no DHCP |
+| Holder | `dns.mdns.lo` (192.168.12.252), holds `mdns.lo` |
+| Reporting | gw, g8, g9, g10, g11, g16, g100 |
+| Not participating | gt |
+
+A device announcing on any of those segments is reachable as
+`<name>.mdns.lo` from all of them, at whatever address it has on its own
+network.
 
 ## Requirements and caveats
 

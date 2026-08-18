@@ -117,32 +117,35 @@ every writer ends a change there, so announcing from that one call covers the
 API, DHCP, mDNS, Kubernetes and reverse-PTR sync without any of them knowing
 NOTIFY exists. Anything new that changes zone data should keep calling it.
 
-## mDNS Ingest (issue #8, shipped in v0.5.0)
+## mDNS Ingest (issue #8)
 
-`crates/microdns-mdns` listens on 224.0.0.251:5353, learns `.local` names
-announced on the instance's own segment, and publishes them into a configured
-zone as authoritative records — so cross-subnet clients resolve names that
-multicast (IP TTL 1) can never reach them. Off by default; enable with
-`PUT /api/v1/mdns/config`. Design and operational notes: `docs/mdns-ingest.md`.
+One shared zone, `mdns.lo`, held by a dedicated instance. Every other instance
+listens on its own segment and registers what it hears into that zone over the
+REST API, then points its own clients at the holder. A device keeps the address
+it has on its own network; its name is simply `<host>.mdns.lo` everywhere.
 
-Two invariants worth remembering before changing anything here:
+Deployed topology:
 
-- **`RecordSource` decides ownership.** Every record carries `manual`/`dhcp`/
-  `mdns`/`k8s`. The mDNS reconcile touches only `mdns` records, so a curated
-  record in the same zone is never deleted and never shadowed.
-- **Withdrawal waits out a 45 s startup grace.** The cache is empty after a
-  restart because nothing has announced yet, not because devices left.
-- **Config lives in redb, not the TOML.** mkube regenerates `microdns.toml`
-  from a Network CRD, so a `[mdns]` block added there is discarded within
-  minutes (observed on g9). The TOML block only seeds the stored value; the
-  API is the source of truth, and the running source follows it live.
+- Network `mdns` — 192.168.12.0/24, `bridge-mdns`, DHCP off, created as an
+  mkube Network CRD (which provisioned the bridge and the DNS pod).
+- `dns.mdns.lo` (192.168.12.252) holds the zone (`holder` empty).
+- gw, g8, g9, g10, g11, g16, g100 report into it (`holder: 192.168.12.252`).
+  **gt is deliberately not part of this.**
 
-Remaining:
+Design notes worth keeping in mind:
 
-- [ ] Confirm `teslatracker-52c4` resolves cross-subnet (the case issue #8 was
-      filed for) — needs the device to be announcing on g9
-- [ ] mkube#22: `[mdns]` in generated TOML — now optional, since the API route
-      works without it
+- **No per-network subzones and no copies.** Both were tried and rejected:
+  `mdns.g9.lo` put the device's location in its name; per-instance mirroring
+  multiplied the zone and needed transfers between instances.
+- **`RecordSource` decides ownership.** Records arrive as `source: mdns`, and
+  each reporting instance persists the ids it created so it withdraws only its
+  own names. Curated records in the zone are never touched.
+- **Withdrawal waits out a 45 s startup grace.** An empty cache after a restart
+  means nothing has announced yet, not that devices left.
+- **Config lives in redb, not the TOML** (`PUT /api/v1/mdns/config`), because
+  mkube regenerates `microdns.toml` from the Network CRD.
+
+Full notes: `docs/mdns-ingest.md`.
 
 ## TODO
 
