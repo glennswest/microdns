@@ -355,6 +355,76 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Start the mDNS source — listens for `.local` announcements on this
+    // instance's segment and republishes them as authoritative records, so
+    // clients on other subnets can resolve names that multicast (IP TTL 1)
+    // can never reach them.
+    let mut mdns_handle: Option<microdns_mdns::MdnsHandle> = None;
+    if let Some(ref mdns_config) = config.mdns {
+        if mdns_config.enabled {
+            let bind: std::net::Ipv4Addr = mdns_config.bind.parse().map_err(|e| {
+                anyhow::anyhow!("invalid [mdns] bind address '{}': {e}", mdns_config.bind)
+            })?;
+            let interfaces: Vec<std::net::Ipv4Addr> = mdns_config
+                .interfaces
+                .iter()
+                .filter_map(|s| match s.parse() {
+                    Ok(ip) => Some(ip),
+                    Err(_) => {
+                        warn!("mdns: ignoring invalid interface address '{s}'");
+                        None
+                    }
+                })
+                .collect();
+
+            // mDNS owns port 5353. A recursor told to listen there too would
+            // take a share of the queries, so say so rather than leaving a
+            // half-working resolver to be discovered later.
+            if let Some(ref recursor) = config.dns.recursor {
+                if recursor.enabled
+                    && recursor
+                        .listen
+                        .rsplit(':')
+                        .next()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        == Some(microdns_mdns::config::MDNS_PORT)
+                {
+                    warn!(
+                        "mdns and the recursor are both on port {} ({}); \
+                         move the recursor to :53 or disable one of them",
+                        microdns_mdns::config::MDNS_PORT,
+                        recursor.listen
+                    );
+                }
+            }
+
+            let mc = microdns_mdns::MdnsConfig {
+                zone: mdns_config.zone.clone(),
+                ttl_min: mdns_config.ttl_min,
+                ttl_max: mdns_config.ttl_max,
+                services: mdns_config.services,
+                allow: mdns_config.allow.clone(),
+                deny: mdns_config.deny.clone(),
+                query_interval_secs: mdns_config.query_interval_secs,
+                ipv6: mdns_config.ipv6,
+                bind,
+                port: microdns_mdns::config::MDNS_PORT,
+                interfaces,
+                debounce_secs: mdns_config.debounce_secs,
+            };
+            let source = microdns_mdns::MdnsSource::new(db.clone(), mc);
+            mdns_handle = Some(source.handle());
+            let rx = shutdown_rx.clone();
+            tasks.push(tokio::spawn(async move {
+                // A failure here (no multicast on the interface, port in use)
+                // must not take DNS down with it.
+                if let Err(e) = source.run(rx).await {
+                    error!("mDNS source error: {e}");
+                }
+            }));
+        }
+    }
+
     // Start recursive DNS server
     let mut recursor_cache = None;
     if let Some(ref recursor_config) = config.dns.recursor {
@@ -605,6 +675,9 @@ async fn main() -> Result<()> {
 
             if let Some(handles) = lb_handles.take() {
                 api = api.with_lb(handles);
+            }
+            if let Some(handle) = mdns_handle.take() {
+                api = api.with_mdns(handle);
             }
             api = api.with_query_tracker(query_tracker.clone());
 

@@ -50,6 +50,7 @@ pub struct ApiServer {
     event_tx: broadcast::Sender<DashboardEvent>,
     recursor_cache: Option<Arc<DnsCache>>,
     lb: Option<LbHandles>,
+    mdns: Option<microdns_mdns::MdnsHandle>,
     query_tracker: Option<Arc<QueryTracker>>,
 }
 
@@ -109,6 +110,8 @@ pub struct AppState {
     pub recursor_cache: Option<Arc<DnsCache>>,
     pub started_at: Instant,
     pub lb: Option<LbHandles>,
+    /// Live view of the mDNS discovery cache, when that source is running.
+    pub mdns: Option<microdns_mdns::MdnsHandle>,
     pub query_tracker: Option<Arc<QueryTracker>>,
 }
 
@@ -130,12 +133,18 @@ impl ApiServer {
             event_tx,
             recursor_cache: None,
             lb: None,
+            mdns: None,
             query_tracker: None,
         }
     }
 
     pub fn with_lb(mut self, handles: LbHandles) -> Self {
         self.lb = Some(handles);
+        self
+    }
+
+    pub fn with_mdns(mut self, handle: microdns_mdns::MdnsHandle) -> Self {
+        self.mdns = Some(handle);
         self
     }
 
@@ -213,6 +222,7 @@ impl ApiServer {
             recursor_cache: self.recursor_cache,
             started_at: Instant::now(),
             lb: self.lb,
+            mdns: self.mdns,
             query_tracker: self.query_tracker,
         };
 

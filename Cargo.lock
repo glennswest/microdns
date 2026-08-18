@@ -1686,6 +1686,7 @@ dependencies = [
  "microdns-core",
  "microdns-federation",
  "microdns-lb",
+ "microdns-mdns",
  "microdns-msg",
  "microdns-recursor",
  "prost",

@@ -46,7 +46,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-pub use cache::{Entry, MdnsCache, Stats};
+pub use cache::{Entry, MdnsCache, Stats, SERVICE_ENUMERATION};
 pub use config::MdnsConfig;
 pub use publish::Applied;
 pub use translate::DesiredRecord;
@@ -59,10 +59,6 @@ const STARTUP_GRACE: Duration = Duration::from_secs(45);
 /// Cap on maintenance re-queries per tick, so a large cache expiring at once
 /// cannot turn into a burst of multicast traffic.
 const MAX_REFRESH_PER_TICK: usize = 20;
-
-/// The DNS-SD meta-query that asks every responder which service types it has
-/// (RFC 6763 §9).
-const SERVICE_ENUMERATION: &str = "_services._dns-sd._udp.local";
 
 /// Live view of the source, shared with the REST API.
 #[derive(Clone)]

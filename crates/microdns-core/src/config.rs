@@ -26,6 +26,65 @@ pub struct Config {
     pub replication: Option<ReplicationConfig>,
     #[serde(default)]
     pub k8s: Option<K8sSourceConfig>,
+    #[serde(default)]
+    pub mdns: Option<MdnsSourceConfig>,
+}
+
+/// mDNS ingest — listens for `.local` announcements on the local segment and
+/// publishes what it hears as authoritative records.
+///
+/// mDNS queries are sent with an IP TTL of 1 and never cross a router, so a
+/// device advertising itself is invisible to clients on any other subnet. This
+/// bridges those names into unicast DNS at the instance that already sits on
+/// the segment where the announcements are audible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MdnsSourceConfig {
+    /// Off by default: existing deployments must not start publishing whatever
+    /// happens to be shouting on their LAN because they upgraded.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Zone discovered names are published into, e.g. `mdns.g9.lo`. A dedicated
+    /// subzone keeps discovered names visibly apart from curated ones.
+    pub zone: String,
+    /// Floor for the announced TTL. Responses to a legacy query carry a 10 s
+    /// TTL (RFC 6762 §6.7); honouring that literally would churn the zone.
+    #[serde(default = "default_mdns_ttl_min")]
+    pub ttl_min: u32,
+    /// Ceiling for the announced TTL, so a device advertising a huge TTL cannot
+    /// pin a record that has gone stale.
+    #[serde(default = "default_mdns_ttl_max")]
+    pub ttl_max: u32,
+    /// Also mirror DNS-SD service records (PTR/SRV/TXT), so service discovery
+    /// works cross-subnet too — not just plain hostnames.
+    #[serde(default = "default_true")]
+    pub services: bool,
+    /// Glob patterns (`*` wildcard) of names to publish. Empty allows all.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Glob patterns never to publish — the escape hatch for a network full of
+    /// printers and Chromecasts. Checked after `allow`, so deny always wins.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Seconds between DNS-SD enumeration queries. 0 makes the source purely
+    /// passive, learning only from announcements it happens to overhear.
+    #[serde(default = "default_mdns_query_interval")]
+    pub query_interval_secs: u64,
+    /// Also join the IPv6 group (`ff02::fb`). Off by default: responders that
+    /// answer over IPv6 answer over IPv4 too, and the join fails on hosts
+    /// without IPv6.
+    #[serde(default)]
+    pub ipv6: bool,
+    /// Address to bind the listener to. `0.0.0.0` listens on every interface.
+    #[serde(default = "default_mdns_bind")]
+    pub bind: String,
+    /// Local interface addresses to join the group on. Empty lets the kernel
+    /// choose, which is what a single-interface container wants.
+    #[serde(default)]
+    pub interfaces: Vec<String>,
+    /// Quiet window (seconds) before a burst of announcements is written to
+    /// the zone.
+    #[serde(default = "default_mdns_debounce")]
+    pub debounce_secs: u64,
 }
 
 /// Kubernetes DNS source — makes this instance authoritative for a cluster's
@@ -515,6 +574,21 @@ fn default_peer_timeout() -> u64 {
 fn default_topic_prefix() -> String {
     "microdns".to_string()
 }
+fn default_mdns_ttl_min() -> u32 {
+    60
+}
+fn default_mdns_ttl_max() -> u32 {
+    1200
+}
+fn default_mdns_query_interval() -> u64 {
+    300
+}
+fn default_mdns_bind() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_mdns_debounce() -> u64 {
+    5
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -530,6 +604,7 @@ impl Default for Config {
             ipam: None,
             replication: None,
             k8s: None,
+            mdns: None,
         }
     }
 }
@@ -686,6 +761,49 @@ format = "text"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.instance.peers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mdns_source() {
+        let toml_str = r#"
+[instance]
+id = "test-mdns"
+mode = "standalone"
+
+[mdns]
+enabled = true
+zone = "mdns.g9.lo"
+deny = ["chromecast-*"]
+
+[database]
+path = "/tmp/test.redb"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let mdns = config.mdns.unwrap();
+        assert!(mdns.enabled);
+        assert_eq!(mdns.zone, "mdns.g9.lo");
+        assert_eq!(mdns.deny, vec!["chromecast-*".to_string()]);
+        // Everything else falls back to defaults.
+        assert_eq!(mdns.ttl_min, 60);
+        assert_eq!(mdns.ttl_max, 1200);
+        assert_eq!(mdns.query_interval_secs, 300);
+        assert!(mdns.services);
+        assert!(!mdns.ipv6);
+        assert_eq!(mdns.bind, "0.0.0.0");
+        assert!(mdns.allow.is_empty());
+    }
+
+    #[test]
+    fn test_mdns_absent_when_not_configured() {
+        let toml_str = r#"
+[instance]
+id = "test-01"
+
+[database]
+path = "/tmp/test.redb"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.mdns.is_none());
     }
 
     #[test]

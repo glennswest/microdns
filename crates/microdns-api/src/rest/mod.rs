@@ -11,6 +11,7 @@ pub mod ipam;
 pub mod lb;
 pub mod leases;
 pub mod logs;
+pub mod mdns;
 pub mod records;
 pub mod watch;
 pub mod zones;
@@ -35,5 +36,6 @@ pub fn router() -> Router<AppState> {
         .merge(dhcp_config::router())
         .merge(dns_forwarders::router())
         .merge(lb::router())
+        .merge(mdns::router())
         .merge(watch::router())
 }

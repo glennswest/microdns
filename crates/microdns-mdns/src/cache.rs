@@ -18,6 +18,10 @@ use microdns_core::types::{RecordData, RecordType};
 /// Re-query once a record has used up this fraction of its lifetime.
 const REFRESH_AT: f64 = 0.8;
 
+/// The DNS-SD meta-query whose answers are service *types*, not instances
+/// (RFC 6763 §9).
+pub const SERVICE_ENUMERATION: &str = "_services._dns-sd._udp.local";
+
 /// One learned mDNS record.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -75,7 +79,6 @@ pub struct Stats {
     pub records_learned: u64,
     pub goodbyes: u64,
     pub expired: u64,
-    pub filtered: u64,
     pub queries_sent: u64,
 }
 
@@ -202,13 +205,29 @@ impl MdnsCache {
 
     /// Distinct DNS-SD service types currently known (`_ipp._tcp.local`), used
     /// to aim the periodic enumeration queries.
+    ///
+    /// Two things name a service type. The meta-query
+    /// `_services._dns-sd._udp.local` answers with one PTR *per type*, so its
+    /// targets are types — that is how a browse learns what exists at all.
+    /// A type also appears as the owner of the PTRs listing its instances, which
+    /// is how types learned from a spontaneous announcement show up.
     pub fn service_types(&self) -> Vec<String> {
-        let mut types: Vec<String> = self
-            .entries
-            .keys()
-            .filter(|(name, rtype)| *rtype == RecordType::PTR && name.starts_with('_'))
-            .map(|(name, _)| name.clone())
-            .collect();
+        let mut types: Vec<String> = Vec::new();
+
+        for ((name, rtype), list) in &self.entries {
+            if *rtype != RecordType::PTR {
+                continue;
+            }
+            if name == SERVICE_ENUMERATION {
+                types.extend(list.iter().filter_map(|e| match &e.data {
+                    RecordData::PTR(target) => Some(target.trim_end_matches('.').to_lowercase()),
+                    _ => None,
+                }));
+            } else if name.starts_with('_') {
+                types.push(name.clone());
+            }
+        }
+
         types.sort();
         types.dedup();
         types
@@ -309,17 +328,48 @@ mod tests {
     }
 
     #[test]
-    fn service_types_lists_only_dns_sd_ptr_owners() {
+    fn service_types_come_from_ptr_owners_and_meta_query_targets() {
         let mut cache = MdnsCache::new();
         let t0 = Utc::now();
+
+        // A type learned from an instance listing.
         cache.learn(
             "_ipp._tcp.local",
-            RecordData::PTR("printer._ipp._tcp.local".into()),
+            RecordData::PTR("printer._ipp._tcp.local.".into()),
             4500,
             ip("192.168.9.2"),
             t0,
         );
+        // Types learned from the meta-query: the *targets* name the types, so
+        // browsing them is what turns an enumeration into actual instances.
+        cache.learn(
+            SERVICE_ENUMERATION,
+            RecordData::PTR("_airplay._tcp.local.".into()),
+            4500,
+            ip("192.168.9.3"),
+            t0,
+        );
+        cache.learn(
+            SERVICE_ENUMERATION,
+            RecordData::PTR("_ssh._tcp.local.".into()),
+            4500,
+            ip("192.168.9.3"),
+            t0,
+        );
+        // Plain hosts are not service types.
         cache.learn("host.local", a("192.168.9.134"), 120, ip("192.168.9.134"), t0);
-        assert_eq!(cache.service_types(), vec!["_ipp._tcp.local".to_string()]);
+
+        assert_eq!(
+            cache.service_types(),
+            vec![
+                "_airplay._tcp.local".to_string(),
+                "_ipp._tcp.local".to_string(),
+                "_ssh._tcp.local".to_string(),
+            ]
+        );
+        assert!(
+            !cache.service_types().contains(&SERVICE_ENUMERATION.to_string()),
+            "the meta-query is not itself a service type to browse"
+        );
     }
 }
