@@ -1,5 +1,6 @@
 use crate::catalog::ZoneCatalog;
 use crate::transfer::ZoneTransfer;
+use crate::runtime::TransferState;
 use crate::secondary::NotifyAcceptor;
 use crate::zone;
 use hickory_proto::op::{MessageType, OpCode, ResponseCode};
@@ -31,8 +32,8 @@ pub struct AuthServer {
     catalog: Arc<ZoneCatalog>,
     db: Db,
     tracker: Option<Arc<QueryTracker>>,
-    /// CIDRs permitted to request a zone transfer. Empty denies everything.
-    allow_transfer: Arc<Vec<IpNet>>,
+    /// Live zone-transfer settings: the AXFR ACL, and whose NOTIFY to believe.
+    transfer: TransferState,
     /// Accepts inbound NOTIFY for zones this instance mirrors. Absent when the
     /// instance is not a secondary for anything.
     notify: Option<NotifyAcceptor>,
@@ -45,32 +46,30 @@ impl AuthServer {
             catalog: Arc::new(ZoneCatalog::new(db.clone())),
             db,
             tracker: None,
-            allow_transfer: Arc::new(Vec::new()),
+            transfer: TransferState::default(),
             notify: None,
         }
     }
 
-    /// Set the CIDRs permitted to request a zone transfer. Entries that do not
-    /// parse are dropped with a warning rather than failing startup — a typo in
-    /// an ACL must not take DNS down, and the effect is to deny, not permit.
-    pub fn with_allow_transfer(mut self, cidrs: &[String]) -> Self {
-        let nets: Vec<IpNet> = cidrs
-            .iter()
-            .filter_map(|c| match IpNet::parse(c) {
-                Some(net) => Some(net),
-                None => {
-                    warn!("ignoring invalid allow_transfer entry '{c}'");
-                    None
-                }
-            })
-            .collect();
-        if nets.is_empty() {
-            warn!("allow_transfer is empty — all zone transfer requests will be refused");
-        } else {
-            info!("zone transfers permitted from: {}", cidrs.join(", "));
-        }
-        self.allow_transfer = Arc::new(nets);
+    /// Use the shared zone-transfer settings for the AXFR ACL. They can change
+    /// under the server — an operator editing them through the API — so they are
+    /// read per request rather than captured here.
+    pub fn with_transfer_state(mut self, transfer: TransferState) -> Self {
+        self.transfer = transfer;
         self
+    }
+
+    /// Set the CIDRs permitted to request a zone transfer, for callers that do
+    /// not share settings with anything else (tests, and single-purpose use).
+    /// Entries that do not parse are dropped with a warning rather than failing
+    /// startup — a typo in an ACL must not take DNS down, and the effect of
+    /// dropping one is to deny, not to permit.
+    pub fn with_allow_transfer(self, cidrs: &[String]) -> Self {
+        let config = microdns_core::config::ZoneTransferConfig {
+            allow_transfer: cidrs.to_vec(),
+            ..Default::default()
+        };
+        self.with_transfer_state(TransferState::new(&config))
     }
 
     pub fn with_query_tracker(mut self, tracker: Arc<QueryTracker>) -> Self {
@@ -100,7 +99,7 @@ impl AuthServer {
         let catalog_tcp = self.catalog.clone();
         let db_tcp = self.db.clone();
         let tracker_tcp = self.tracker.clone();
-        let allow_tcp = self.allow_transfer.clone();
+        let transfer_tcp = self.transfer.clone();
         let notify_tcp = self.notify.clone();
 
         // TCP accept loop with connection limit
@@ -122,7 +121,7 @@ impl AuthServer {
                                 let catalog = catalog_tcp.clone();
                                 let db = db_tcp.clone();
                                 let tracker = tracker_tcp.clone();
-                                let allow = allow_tcp.clone();
+                                let transfer = transfer_tcp.clone();
                                 let notify = notify_tcp.clone();
                                 tokio::spawn(async move {
                                     let result = tokio::time::timeout(
@@ -133,7 +132,7 @@ impl AuthServer {
                                             &db,
                                             tracker.as_deref(),
                                             src,
-                                            &allow,
+                                            &transfer,
                                             notify.as_ref(),
                                         ),
                                     ).await;
@@ -367,7 +366,7 @@ async fn handle_tcp_connection(
     db: &Db,
     tracker: Option<&QueryTracker>,
     peer: SocketAddr,
-    allow_transfer: &[IpNet],
+    transfer: &TransferState,
     notify: Option<&NotifyAcceptor>,
 ) -> anyhow::Result<()> {
     // Read 2-byte length prefix
@@ -405,7 +404,7 @@ async fn handle_tcp_connection(
 
         // A zone transfer hands over a complete map of internal hosts, so the
         // peer must be explicitly permitted before we build anything.
-        if !transfer_allowed(peer, allow_transfer) {
+        if !transfer_allowed(peer, &transfer.allow_transfer()) {
             warn!("AXFR for {zone_name} refused: {peer} is not in allow_transfer");
             let wire = refusal(&request, queries)?;
             stream.write_all(&(wire.len() as u16).to_be_bytes()).await?;
@@ -485,7 +484,7 @@ async fn handle_tcp_connection(
 }
 
 /// A CIDR block, kept local so the ACL adds no dependency.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpNet {
     addr: IpAddr,
     prefix: u8,

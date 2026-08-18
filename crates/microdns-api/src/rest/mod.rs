@@ -14,6 +14,7 @@ pub mod logs;
 pub mod mdns;
 pub mod records;
 pub mod watch;
+pub mod zone_transfer;
 pub mod zones;
 
 use crate::AppState;
@@ -37,5 +38,6 @@ pub fn router() -> Router<AppState> {
         .merge(dns_forwarders::router())
         .merge(lb::router())
         .merge(mdns::router())
+        .merge(zone_transfer::router())
         .merge(watch::router())
 }

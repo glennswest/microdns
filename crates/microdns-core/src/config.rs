@@ -191,6 +191,36 @@ pub struct DnsAuthConfig {
     pub secondary: Vec<SecondaryZoneConfig>,
 }
 
+/// Zone transfer settings, stored in the database and managed through the API.
+///
+/// Same reason as the mDNS section: on deployments whose `microdns.toml` is
+/// generated for them, a `[dns.auth]` edit does not survive the next
+/// regeneration. The `[dns.auth]` fields seed this once, and after that the
+/// stored value is what the instance runs on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ZoneTransferConfig {
+    /// CIDRs permitted to request an AXFR. Empty denies every transfer.
+    #[serde(default = "default_allow_transfer")]
+    pub allow_transfer: Vec<String>,
+    /// Secondaries to send NOTIFY to when a zone changes.
+    #[serde(default)]
+    pub notify: Vec<String>,
+    /// Zones mirrored from a primary.
+    #[serde(default)]
+    pub secondary: Vec<SecondaryZoneConfig>,
+}
+
+impl ZoneTransferConfig {
+    /// The settings a `[dns.auth]` block implies, used to seed the stored value.
+    pub fn from_auth(auth: &DnsAuthConfig) -> Self {
+        Self {
+            allow_transfer: auth.allow_transfer.clone(),
+            notify: auth.notify.clone(),
+            secondary: auth.secondary.clone(),
+        }
+    }
+}
+
 /// One zone mirrored from a primary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecondaryZoneConfig {

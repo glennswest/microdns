@@ -12,7 +12,8 @@ use chrono::Utc;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{Name, RecordType as ProtoType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
-use microdns_auth::secondary::{SecondaryAgent, SecondaryZone};
+use microdns_auth::runtime::TransferState;
+use microdns_auth::secondary::SecondaryAgent;
 use microdns_auth::server::AuthServer;
 use microdns_auth::transfer::ZoneTransfer;
 use microdns_core::db::Db;
@@ -200,8 +201,16 @@ async fn a_notify_from_the_primary_makes_the_secondary_transfer() {
     // The secondary: mirrors gw.lo from that primary, and runs its own DNS
     // listener so a NOTIFY has somewhere to land.
     let (secondary_db, _s) = test_db();
-    let zones = vec![SecondaryZone::parse("gw.lo", &primary_addr.to_string(), 3600).unwrap()];
-    let (agent, acceptor) = SecondaryAgent::new(secondary_db.clone(), zones);
+    let state = TransferState::new(&microdns_core::config::ZoneTransferConfig {
+        allow_transfer: vec![],
+        notify: vec![],
+        secondary: vec![microdns_core::config::SecondaryZoneConfig {
+            zone: "gw.lo".into(),
+            primary: primary_addr.to_string(),
+            refresh_secs: 3600,
+        }],
+    });
+    let (agent, acceptor) = SecondaryAgent::new(secondary_db.clone(), state);
 
     let secondary_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, free_port()));
     let (_stop_secondary, server_rx) = watch::channel(false);
@@ -242,8 +251,16 @@ async fn a_notify_from_the_primary_makes_the_secondary_transfer() {
 async fn a_notify_from_anyone_else_is_refused() {
     let (secondary_db, _s) = test_db();
     // The configured primary is an address this test cannot send from.
-    let zones = vec![SecondaryZone::parse("gw.lo", "192.0.2.1", 3600).unwrap()];
-    let (_agent, acceptor) = SecondaryAgent::new(secondary_db.clone(), zones);
+    let state = TransferState::new(&microdns_core::config::ZoneTransferConfig {
+        allow_transfer: vec![],
+        notify: vec![],
+        secondary: vec![microdns_core::config::SecondaryZoneConfig {
+            zone: "gw.lo".into(),
+            primary: "192.0.2.1".into(),
+            refresh_secs: 3600,
+        }],
+    });
+    let (_agent, acceptor) = SecondaryAgent::new(secondary_db.clone(), state);
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, free_port()));
     let (_stop, rx) = watch::channel(false);

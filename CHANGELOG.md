@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0] - 2026-08-18
+
+### Added
+- **feat(auth):** Zone-transfer settings are now stored in the database and managed through the API — `GET`/`PUT`/`DELETE /api/v1/zone-transfer/config` covering `allow_transfer`, `notify` and `secondary`. All three consumers read the same live settings, so an AXFR ACL change, a new NOTIFY target or a newly mirrored zone takes effect within ten seconds without a restart: the listener re-reads the ACL per request, the announcer re-reads its targets per batch, and the mirror agent re-reads its zone list per tick. The `[dns.auth]` fields seed the stored value on first run only. Same reason as the mDNS section — on mkube-managed instances the TOML is regenerated from a Network CRD and hand-added blocks do not survive
+
+### Changed
+- **refactor(auth):** `Notifier` is now a stateless `notify_zone(zone, targets)`, since the target list is no longer fixed at startup
+
 ## [0.6.1] - 2026-08-18
 
 ### Fixed

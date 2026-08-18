@@ -130,22 +130,13 @@ async fn main() -> Result<()> {
     // announced to them: `increment_soa_serial` is the one call every writer
     // makes, so a hook there catches API edits, DHCP registration, mDNS and
     // Kubernetes alike without any of them knowing NOTIFY exists.
-    let notify_targets: Vec<String> = config
-        .dns
-        .auth
-        .as_ref()
-        .map(|a| a.notify.clone())
-        .unwrap_or_default();
     let (zone_change_tx, zone_change_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let mut db = Db::open(&config.database.path)?;
-    if !notify_targets.is_empty() {
-        let tx = zone_change_tx.clone();
-        db = db.with_zone_change_hook(std::sync::Arc::new(move |zone: &str| {
+    let db = Db::open(&config.database.path)?.with_zone_change_hook(std::sync::Arc::new(
+        move |zone: &str| {
             // Runs on the writing thread: hand it off and get out of the way.
-            let _ = tx.send(zone.to_string());
-        }));
-    }
-    let db = db;
+            let _ = zone_change_tx.send(zone.to_string());
+        },
+    ));
     info!(path = %config.database.path.display(), "database opened");
 
     // TOML → database migration: if config file was provided and DB tables are empty,
@@ -318,56 +309,92 @@ async fn main() -> Result<()> {
     // copy is seconds behind instead of a refresh interval behind.
     // Inbound: mirror the zones this instance is a secondary for, driven by
     // those NOTIFYs and by each zone's own timer.
-    let mut notify_acceptor = None;
-    if let Some(ref auth_config) = config.dns.auth {
-        if !notify_targets.is_empty() {
-            let notifier = microdns_auth::notify::Notifier::new(&notify_targets);
-            if notifier.is_empty() {
-                warn!("notify is configured but no target parsed; zone changes will not be announced");
-            } else {
-                info!(
-                    "announcing zone changes to {} secondary(ies)",
-                    notifier.targets().len()
-                );
-                let rx = shutdown_rx.clone();
-                tasks.push(tokio::spawn(async move {
-                    notify_agent(notifier, zone_change_rx, rx).await;
-                }));
+    //
+    // The settings live in the database and are applied live, so they can be
+    // changed through the API on instances whose config file is generated for
+    // them. A `[dns.auth]` block seeds the stored value on first run only.
+    let transfer_state;
+    let mut notify_acceptor;
+    {
+        if let Some(ref auth_config) = config.dns.auth {
+            let seed = microdns_core::config::ZoneTransferConfig::from_auth(auth_config);
+            match db.get_runtime_section::<microdns_core::config::ZoneTransferConfig>(
+                microdns_api::rest::zone_transfer::CONFIG_SECTION,
+            ) {
+                Ok(None) => {
+                    if let Err(e) = db.set_runtime_section(
+                        microdns_api::rest::zone_transfer::CONFIG_SECTION,
+                        &seed,
+                    ) {
+                        warn!("could not seed zone transfer settings: {e}");
+                    } else {
+                        info!("zone transfer: seeded stored settings from [dns.auth]");
+                    }
+                }
+                Ok(Some(_)) => {}
+                Err(e) => warn!("could not read stored zone transfer settings: {e}"),
             }
         }
 
-        let secondary_zones: Vec<microdns_auth::secondary::SecondaryZone> = auth_config
-            .secondary
-            .iter()
-            .filter_map(|s| {
-                match microdns_auth::secondary::SecondaryZone::parse(
-                    &s.zone,
-                    &s.primary,
-                    s.refresh_secs,
-                ) {
-                    Some(zone) => Some(zone),
-                    None => {
-                        warn!(
-                            "ignoring secondary zone '{}': primary '{}' is not an address",
-                            s.zone, s.primary
-                        );
-                        None
-                    }
-                }
-            })
-            .collect();
+        let stored = db
+            .get_runtime_section::<microdns_core::config::ZoneTransferConfig>(
+                microdns_api::rest::zone_transfer::CONFIG_SECTION,
+            )
+            .unwrap_or_default()
+            .unwrap_or_default();
+        transfer_state = microdns_auth::runtime::TransferState::new(&stored);
 
-        if !secondary_zones.is_empty() {
-            let (agent, acceptor) =
-                microdns_auth::secondary::SecondaryAgent::new(db.clone(), secondary_zones);
-            notify_acceptor = Some(acceptor);
-            let rx = shutdown_rx.clone();
+        // One watcher keeps the shared settings current for all three consumers.
+        {
+            let watcher_db = db.clone();
+            let watcher_state = transfer_state.clone();
+            let mut rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = agent.run(rx).await {
-                    error!("secondary zone agent error: {e}");
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = tick.tick() => {
+                            let stored = watcher_db
+                                .get_runtime_section::<microdns_core::config::ZoneTransferConfig>(
+                                    microdns_api::rest::zone_transfer::CONFIG_SECTION,
+                                )
+                                .unwrap_or_default()
+                                .unwrap_or_default();
+                            if watcher_state.replace(&stored) {
+                                info!("zone transfer: settings changed — {}", watcher_state.summary());
+                            }
+                        }
+                        _ = rx.changed() => {
+                            if *rx.borrow() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }));
         }
+
+        // Announce changes. The hook on the database feeds this; the target list
+        // comes from the live settings, so it follows an API edit too.
+        {
+            let notifier_state = transfer_state.clone();
+            let rx = shutdown_rx.clone();
+            tasks.push(tokio::spawn(async move {
+                notify_agent(notifier_state, zone_change_rx, rx).await;
+            }));
+        }
+
+        // Mirror the zones this instance is a secondary for.
+        let (agent, acceptor) =
+            microdns_auth::secondary::SecondaryAgent::new(db.clone(), transfer_state.clone());
+        notify_acceptor = Some(acceptor);
+        let rx = shutdown_rx.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = agent.run(rx).await {
+                error!("secondary zone agent error: {e}");
+            }
+        }));
     }
 
     // Start auth DNS server
@@ -376,7 +403,7 @@ async fn main() -> Result<()> {
             let addr: SocketAddr = auth_config.listen.parse()?;
             let mut server = AuthServer::new(addr, db.clone())
                 .with_query_tracker(query_tracker.clone())
-                .with_allow_transfer(&auth_config.allow_transfer);
+                .with_transfer_state(transfer_state.clone());
             if let Some(acceptor) = notify_acceptor.take() {
                 server = server.with_notify_acceptor(acceptor);
             }
@@ -386,7 +413,7 @@ async fn main() -> Result<()> {
                     error!("auth DNS server error: {e}");
                 }
             }));
-        } else if notify_acceptor.is_some() {
+        } else if !auth_config.secondary.is_empty() {
             // Without the DNS listener there is nothing to receive a NOTIFY on,
             // so the mirror would only ever refresh on its timer.
             warn!(
@@ -858,7 +885,7 @@ async fn main() -> Result<()> {
 /// transferring the same zone repeatedly, so changes are collected over a short
 /// window and collapsed to one NOTIFY per zone.
 async fn notify_agent(
-    notifier: microdns_auth::notify::Notifier,
+    state: microdns_auth::runtime::TransferState,
     mut changes: tokio::sync::mpsc::UnboundedReceiver<String>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -890,8 +917,12 @@ async fn notify_agent(
         zones.sort();
         zones.dedup();
 
+        let targets = state.notify_targets();
+        if targets.is_empty() {
+            continue;
+        }
         for zone in zones {
-            notifier.notify_zone(&zone).await;
+            microdns_auth::notify::notify_zone(&zone, &targets).await;
         }
     }
 }

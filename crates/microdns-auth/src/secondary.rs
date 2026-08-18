@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
@@ -26,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+use crate::runtime::{parse_addr, TransferState};
 use crate::transfer::ZoneTransfer;
 
 /// How long to wait for a primary to answer an SOA probe.
@@ -41,7 +41,7 @@ const TICK: Duration = Duration::from_secs(15);
 const NOTIFY_SETTLE: Duration = Duration::from_secs(2);
 
 /// One zone this instance mirrors.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecondaryZone {
     /// Zone name, lowercased, no trailing dot.
     pub zone: String,
@@ -70,37 +70,27 @@ impl SecondaryZone {
 ///
 /// Held by the DNS server, which knows nothing about transfers — it only needs
 /// to decide whether this sender is allowed to speak for this zone, and to pass
-/// the name along.
+/// the name along. The decision comes from the live settings, so a zone added
+/// through the API is believed without a restart.
 #[derive(Clone)]
 pub struct NotifyAcceptor {
-    /// Zone name (lowercase, no trailing dot) → the address of its primary.
-    primaries: Arc<HashMap<String, IpAddr>>,
+    state: TransferState,
     tx: mpsc::UnboundedSender<String>,
 }
 
 impl NotifyAcceptor {
-    fn new(zones: &[SecondaryZone], tx: mpsc::UnboundedSender<String>) -> Self {
-        let primaries = zones
-            .iter()
-            .map(|z| (z.zone.clone(), z.primary.ip()))
-            .collect();
-        Self {
-            primaries: Arc::new(primaries),
-            tx,
-        }
-    }
-
     /// Whether `peer` may announce a change to `zone`, and if so, queue it.
     ///
-    /// Only the configured primary is believed. A NOTIFY is an instruction to
-    /// go and transfer a zone, so accepting one from anywhere would let any
-    /// host on the network aim this instance's transfers wherever it liked.
+    /// Only that zone's configured primary is believed. A NOTIFY is an
+    /// instruction to go and transfer a zone, so accepting one from anywhere
+    /// would let any host on the network aim this instance's transfers wherever
+    /// it liked.
     pub fn accept(&self, peer: IpAddr, zone: &str) -> bool {
         let zone = zone.trim_end_matches('.').to_lowercase();
-        let Some(primary) = self.primaries.get(&zone) else {
+        let Some(primary) = self.state.primary_for(&zone) else {
             return false;
         };
-        if *primary != normalize(peer) {
+        if primary != normalize(peer) {
             return false;
         }
         let _ = self.tx.send(zone);
@@ -111,81 +101,81 @@ impl NotifyAcceptor {
 /// Mirrors the configured zones, driven by NOTIFY and by each zone's timer.
 pub struct SecondaryAgent {
     db: Db,
-    zones: Vec<SecondaryZone>,
+    state: TransferState,
     notify_rx: mpsc::UnboundedReceiver<String>,
 }
 
 impl SecondaryAgent {
     /// Build the agent and the acceptor the DNS server hands NOTIFYs to.
-    pub fn new(db: Db, zones: Vec<SecondaryZone>) -> (Self, NotifyAcceptor) {
+    pub fn new(db: Db, state: TransferState) -> (Self, NotifyAcceptor) {
         let (tx, notify_rx) = mpsc::unbounded_channel();
-        let acceptor = NotifyAcceptor::new(&zones, tx);
+        let acceptor = NotifyAcceptor {
+            state: state.clone(),
+            tx,
+        };
         (
             Self {
                 db,
-                zones,
+                state,
                 notify_rx,
             },
             acceptor,
         )
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.zones.is_empty()
-    }
-
-    /// Check every zone once, then keep them current until shutdown.
+    /// Keep the mirrored zones current until shutdown.
+    ///
+    /// The zone list is re-read on every tick rather than captured at startup,
+    /// so a zone added or re-homed through the API is picked up without a
+    /// restart.
     pub async fn run(mut self, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        info!(
-            "secondary: mirroring {} zone(s): {}",
-            self.zones.len(),
-            self.zones
-                .iter()
-                .map(|z| format!("{} from {}", z.zone, z.primary))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
-        // Next scheduled check per zone, by index. Everything is due at once at
-        // startup so a secondary that was down comes back current immediately.
-        let mut due: Vec<tokio::time::Instant> = vec![tokio::time::Instant::now(); self.zones.len()];
+        // When each zone is next due, keyed by name so the schedule survives
+        // the list being edited underneath it. A zone with no entry is new —
+        // startup, or just configured — and is checked at once, so a secondary
+        // that was down comes back current immediately.
+        let mut due: HashMap<String, tokio::time::Instant> = HashMap::new();
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut announced: Vec<String> = Vec::new();
 
         loop {
             tokio::select! {
                 Some(zone) = self.notify_rx.recv() => {
                     // Collapse a burst: drain anything already queued, then let
                     // the settle window catch the rest before transferring.
-                    let mut names = vec![zone];
+                    announced.push(zone);
                     while let Ok(more) = self.notify_rx.try_recv() {
-                        names.push(more);
+                        announced.push(more);
                     }
                     tokio::time::sleep(NOTIFY_SETTLE).await;
                     while let Ok(more) = self.notify_rx.try_recv() {
-                        names.push(more);
+                        announced.push(more);
                     }
-                    names.sort();
-                    names.dedup();
+                    announced.sort();
+                    announced.dedup();
 
-                    for name in names {
-                        let Some(index) = self.zones.iter().position(|z| z.zone == name) else {
+                    let zones = self.state.secondaries();
+                    for name in announced.drain(..) {
+                        let Some(zone) = zones.iter().find(|z| z.zone == name) else {
                             continue;
                         };
                         info!("secondary: NOTIFY for {name}; checking primary");
-                        self.check(index).await;
-                        due[index] = tokio::time::Instant::now() + self.zones[index].refresh;
+                        self.check(zone).await;
+                        due.insert(name, tokio::time::Instant::now() + zone.refresh);
                     }
                 }
                 _ = tick.tick() => {
+                    let zones = self.state.secondaries();
                     let now = tokio::time::Instant::now();
-                    for index in 0..self.zones.len() {
-                        if due[index] > now {
+                    for zone in &zones {
+                        if due.get(&zone.zone).is_some_and(|at| *at > now) {
                             continue;
                         }
-                        self.check(index).await;
-                        due[index] = tokio::time::Instant::now() + self.zones[index].refresh;
+                        self.check(zone).await;
+                        due.insert(zone.zone.clone(), tokio::time::Instant::now() + zone.refresh);
                     }
+                    // Forget schedules for zones no longer mirrored.
+                    due.retain(|name, _| zones.iter().any(|z| &z.zone == name));
                 }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
@@ -199,9 +189,7 @@ impl SecondaryAgent {
     }
 
     /// Compare serials with the primary and transfer when they differ.
-    async fn check(&self, index: usize) {
-        let zone = &self.zones[index];
-
+    async fn check(&self, zone: &SecondaryZone) {
         let remote = match remote_serial(&zone.zone, zone.primary).await {
             Ok(serial) => serial,
             // A primary that is down is exactly when the local copy matters, so
@@ -312,15 +300,6 @@ fn is_newer(candidate: u32, current: u32) -> bool {
     candidate != current && candidate.wrapping_sub(current) < 1 << 31
 }
 
-/// Parse `192.168.1.252` or `192.168.1.252:53`, defaulting to port 53.
-fn parse_addr(target: &str) -> Option<SocketAddr> {
-    let t = target.trim();
-    if let Ok(addr) = t.parse::<SocketAddr>() {
-        return Some(addr);
-    }
-    t.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, 53))
-}
-
 /// Unwrap an IPv4-mapped IPv6 peer (`::ffff:192.168.1.1`) so a dual-stack
 /// listener compares equal to an IPv4 primary.
 fn normalize(ip: IpAddr) -> IpAddr {
@@ -347,8 +326,26 @@ fn query_id() -> u16 {
 mod tests {
     use super::*;
 
-    fn zones() -> Vec<SecondaryZone> {
-        vec![SecondaryZone::parse("gw.lo", "192.168.1.252", 900).unwrap()]
+    fn transfer_config(zone: &str, primary: &str) -> microdns_core::config::ZoneTransferConfig {
+        microdns_core::config::ZoneTransferConfig {
+            allow_transfer: vec![],
+            notify: vec![],
+            secondary: vec![microdns_core::config::SecondaryZoneConfig {
+                zone: zone.into(),
+                primary: primary.into(),
+                refresh_secs: 900,
+            }],
+        }
+    }
+
+    fn acceptor() -> (TransferState, NotifyAcceptor, mpsc::UnboundedReceiver<String>) {
+        let state = TransferState::new(&transfer_config("gw.lo", "192.168.1.252"));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let acceptor = NotifyAcceptor {
+            state: state.clone(),
+            tx,
+        };
+        (state, acceptor, rx)
     }
 
     #[test]
@@ -372,8 +369,7 @@ mod tests {
 
     #[test]
     fn only_the_configured_primary_may_announce_a_zone() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let acceptor = NotifyAcceptor::new(&zones(), tx);
+        let (_state, acceptor, mut rx) = acceptor();
 
         assert!(acceptor.accept("192.168.1.252".parse().unwrap(), "gw.lo."));
         assert_eq!(rx.try_recv().unwrap(), "gw.lo");
@@ -387,9 +383,21 @@ mod tests {
 
     #[test]
     fn an_ipv4_mapped_peer_is_still_the_primary() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let acceptor = NotifyAcceptor::new(&zones(), tx);
+        let (_state, acceptor, _rx) = acceptor();
         assert!(acceptor.accept("::ffff:192.168.1.252".parse().unwrap(), "gw.lo"));
+    }
+
+    #[test]
+    fn a_zone_added_through_the_api_is_believed_without_a_restart() {
+        let (state, acceptor, mut rx) = acceptor();
+        assert!(!acceptor.accept("192.168.10.252".parse().unwrap(), "g10.lo"));
+
+        state.replace(&transfer_config("g10.lo", "192.168.10.252"));
+
+        assert!(acceptor.accept("192.168.10.252".parse().unwrap(), "g10.lo"));
+        assert_eq!(rx.try_recv().unwrap(), "g10.lo");
+        // The zone it replaced is no longer accepted.
+        assert!(!acceptor.accept("192.168.1.252".parse().unwrap(), "gw.lo"));
     }
 
     #[test]

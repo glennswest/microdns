@@ -15,20 +15,40 @@ only as fresh as its refresh interval — 3600 s on these zones, which is exactl
 the window in which a fallback server would be serving visibly wrong data at the
 moment it is being relied on.
 
-## Primary
+## Configuring it
+
+Settings live in the database and are managed through the API, applied within
+ten seconds without a restart. That is deliberate: on mkube-managed instances
+`microdns.toml` is generated from a Network CRD, so a `[dns.auth]` edit is
+discarded the next time it regenerates.
+
+```bash
+curl -s -X PUT http://192.168.1.252:8080/api/v1/zone-transfer/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "allow_transfer": ["192.168.0.0/16", "127.0.0.0/8"],
+    "notify": ["192.168.1.51"],
+    "secondary": []
+  }'
+```
+
+`GET` returns what is stored (404 before anything is), and `DELETE` clears it —
+transfers refused, nothing announced, no zone mirrored. `PUT` replaces the whole
+object, so send all three fields.
+
+The equivalent `[dns.auth]` block is still read, but only to **seed** the stored
+value the first time:
 
 ```toml
 [dns.auth]
 enabled = true
 listen = "0.0.0.0:53"
 zones = ["gw.lo"]
-
-# Who may pull a full copy. Default is RFC1918 + loopback.
 allow_transfer = ["192.168.0.0/16", "127.0.0.0/8"]
-
-# Who to tell when a zone changes. `ip` or `ip:port`.
 notify = ["192.168.1.51", "192.168.8.253:53"]
 ```
+
+## Primary
 
 Every writer in MicroDNS ends a change by bumping the zone's SOA serial — the
 REST API, DHCP auto-registration, the mDNS and Kubernetes sources, reverse-PTR
@@ -45,11 +65,30 @@ failures are logged and never block the write that triggered them.
 
 ## Secondary
 
-```toml
-[dns.auth]
-enabled = true          # required: this is what receives the NOTIFY
-listen = "0.0.0.0:53"
+`[dns.auth] enabled` must be true — the DNS listener is what receives a NOTIFY.
+Without it, mirroring falls back to the refresh timer and the instance logs a
+warning saying so.
 
+```bash
+curl -s -X PUT http://192.168.1.51:8080/api/v1/zone-transfer/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "allow_transfer": ["127.0.0.0/8"],
+    "notify": [],
+    "secondary": [
+      {"zone": "gw.lo", "primary": "192.168.1.252", "refresh_secs": 900}
+    ]
+  }'
+```
+
+A zone added this way is picked up on the next tick — the mirror agent re-reads
+its zone list, the listener starts believing that primary's NOTIFY, and the
+first transfer runs immediately. Removing one stops the mirroring; the copy that
+was already transferred stays until it is deleted like any other zone.
+
+The bootstrap equivalent:
+
+```toml
 [[dns.auth.secondary]]
 zone = "gw.lo"
 primary = "192.168.1.252"
@@ -98,6 +137,9 @@ hard to diagnose.
 ## Operating it
 
 ```bash
+# What this instance is configured to do
+curl -s http://192.168.1.51:8080/api/v1/zone-transfer/config
+
 # Pull a zone by hand (one-shot; same path the secondary agent uses)
 curl -s -X POST http://192.168.1.51:8080/api/v1/zones/transfer \
   -H 'Content-Type: application/json' \

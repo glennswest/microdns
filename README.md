@@ -229,6 +229,8 @@ report_interval_secs = 30
 enabled = true
 listen = "0.0.0.0:53"
 zones = ["example.com", "1.168.192.in-addr.arpa"]
+# Seeds the stored settings the first time only — afterwards use
+# PUT /api/v1/zone-transfer/config.
 # Who may pull a full copy of a zone (AXFR hands over a map of every
 # internal host). Default: RFC1918 + loopback.
 allow_transfer = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"]
@@ -521,7 +523,7 @@ gate all DNS operations on this endpoint.
 
 Response (200):
 ```json
-{"status": "ok", "version": "0.6.1", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
+{"status": "ok", "version": "0.7.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
 ```
 
 Response (503):
@@ -565,6 +567,18 @@ GET    /api/v1/logs?limit=100&level=info&module=dhcp
 ```
 
 In-memory ring buffer (1000 entries) with level/module filtering.
+
+### Zone Transfer
+
+```
+GET    /api/v1/zone-transfer/config
+PUT    /api/v1/zone-transfer/config
+DELETE /api/v1/zone-transfer/config
+```
+
+The AXFR allow-list, NOTIFY targets and mirrored zones. Stored in the database
+and applied live (the `[dns.auth]` fields seed it on first run only). See
+[docs/zone-transfer.md](docs/zone-transfer.md).
 
 ### mDNS
 
