@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.0] - 2026-08-18
+
+### Changed
+- **feat(mdns):** Discovered names now land in **one flat domain shared by every instance** (`mdns.lo` by default) instead of a per-network subzone. Each instance publishes what it hears on its own segment and mirrors what its siblings hear, so a name resolves identically from any network and callers no longer need to know which subnet a device sits on. Mirroring is a pull (`GET /api/v1/mdns/discovered` every `peer_sync_secs`, default 30 s) and a sibling only ever reports what it heard itself, which is what stops instances echoing copies back and forth. Siblings are derived from the DNS forwarders an instance already has, so a new network needs no mDNS configuration; `peers` overrides that, and `peer_sync_secs = 0` restores per-instance behaviour. A sibling that cannot be reached keeps its last reported names, which then age out on their own TTL rather than vanishing because one poll failed
+- **feat(api):** `/api/v1/mdns/status` now separates `heard_here` from `mirrored` and lists each sibling with its name count and last sync; `/api/v1/mdns/discovered` reports the answering `instance_id` and — deliberately — only what that instance heard itself
+
 ## [0.7.0] - 2026-08-18
 
 ### Added

@@ -49,13 +49,18 @@ pub struct MdnsConfig {
     pub interfaces: Vec<Ipv4Addr>,
     /// Quiet window before a burst of announcements is written to the zone.
     pub debounce_secs: u64,
+    /// Sibling instances to mirror discoveries from. Empty derives them from
+    /// this instance's DNS forwarders.
+    pub peers: Vec<String>,
+    /// How often to pull each sibling. 0 turns mirroring off.
+    pub peer_sync_secs: u64,
 }
 
 impl Default for MdnsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            zone: "mdns.local".to_string(),
+            zone: "mdns.lo".to_string(),
             ttl_min: 60,
             ttl_max: 1200,
             services: true,
@@ -67,6 +72,8 @@ impl Default for MdnsConfig {
             port: MDNS_PORT,
             interfaces: Vec::new(),
             debounce_secs: 5,
+            peers: Vec::new(),
+            peer_sync_secs: 30,
         }
     }
 }
@@ -106,6 +113,8 @@ impl From<&microdns_core::config::MdnsSourceConfig> for MdnsConfig {
             port: MDNS_PORT,
             interfaces,
             debounce_secs: c.debounce_secs,
+            peers: c.peers.clone(),
+            peer_sync_secs: c.peer_sync_secs,
         }
     }
 }

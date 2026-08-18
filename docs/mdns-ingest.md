@@ -33,8 +33,14 @@ config is regenerated. The stored config survives it.
 ```bash
 curl -s -X PUT http://192.168.9.252:8080/api/v1/mdns/config \
   -H 'Content-Type: application/json' \
-  -d '{"enabled": true, "zone": "mdns.g9.lo"}'
+  -d '{"enabled": true}'
 ```
+
+Run that on every instance and you get **one flat domain**, `mdns.lo`, that
+answers for devices on any network. Each instance publishes what it hears on
+its own segment and mirrors what its siblings hear, so the same name resolves
+the same way from anywhere — no network in the name, and no need to know which
+subnet a device sits on.
 
 The running source picks the change up within ten seconds — starting, stopping
 or re-homing its zone with no restart. `DELETE /api/v1/mdns/config` turns it off
@@ -51,31 +57,56 @@ zone = "mdns.g9.lo"     # required — where discovered names land
 
 Once the value is stored, the file no longer has a say — edit it through the API.
 
-A device announcing `teslatracker-52c4.local` on that segment becomes:
+A device announcing `teslatracker-52c4.local` on g9 becomes:
 
 ```
-teslatracker-52c4.mdns.g9.lo.  120  IN  A  192.168.9.134
+teslatracker-52c4.mdns.lo.  120  IN  A  192.168.9.134
 ```
 
-Resolvable from any subnet that can reach this instance. For clients on other
-networks, add the usual forward zone entry so queries reach the right instance:
+resolvable from every instance, not just g9's.
 
-```toml
-[dns.recursor.forward_zones]
-"mdns.g9.lo" = ["192.168.9.252:53"]
+### How one domain covers every network
+
+mDNS is only audible on the segment it was announced on, so each instance hears
+a different slice. Rather than making that slicing visible in the name, each
+instance mirrors what its siblings heard:
+
+```
+g9  hears teslatracker-52c4  ──┐
+g8  hears glenns-macbook-air ──┼─→ every instance holds all of it → mdns.lo
+gw  hears cap01              ──┘
 ```
 
-### Why a dedicated subzone
+Every instance therefore answers for the whole fleet out of its own database —
+no cross-instance lookup when a client asks, and no single instance whose loss
+takes the domain down. Mirroring is a pull (`GET /api/v1/mdns/discovered` on
+each sibling, every `peer_sync_secs`), and a sibling only ever reports what it
+heard *itself*, which is what stops two instances echoing copies back and forth.
 
-`zone` can be any zone, but a subzone (`mdns.<network>.lo`) is the recommended
-shape: it keeps auto-discovered names visibly separate from curated ones, and
-it is obvious at a glance where a name came from. Pointing `zone` at the
-network's main zone works too — discovered records are labelled `source: mdns`
-either way, and curated records in that zone are never touched.
+Siblings come from the DNS forwarders the instance already has — one per sibling
+network — so adding a network needs no mDNS configuration. Set `peers`
+explicitly to override that.
+
+A peer that cannot be reached keeps whatever it last reported; those names age
+out on their own TTL rather than disappearing because one poll failed.
+
+### Choosing a different shape
+
+`zone` can be anything. Per-network zones (`mdns.g9.lo` on g9, `mdns.g8.lo` on
+g8) still work if you want the network visible in the name — but then each
+instance answers only for its own segment, and callers have to know where a
+device lives. Set `peer_sync_secs` to 0 for that.
 
 Note that publishing into a zone literally named `local` is *not* useful in
 practice: macOS and systemd-resolved route `.local` to multicast only and never
 ask a unicast resolver, so those queries would never arrive.
+
+### Name collisions
+
+Two devices on different networks announcing the same name both get published,
+producing one RRset with both addresses. Nothing arbitrates between them — the
+flat domain is a flat namespace, and `deny` is the tool for excluding a noisy
+duplicate.
 
 ## Configuration
 
@@ -86,7 +117,7 @@ config, not a fragment.
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Off unless asked for — an upgrade must not start publishing whatever is shouting on the LAN |
-| `zone` | *(required)* | Zone discovered names are published into |
+| `zone` | `"mdns.lo"` | Zone discovered names are published into — one flat domain shared by every instance |
 | `ttl_min` | `60` | Floor for the announced TTL. Responses to a legacy query carry 10 s (RFC 6762 §6.7), which would churn the zone |
 | `ttl_max` | `1200` | Ceiling, so a device advertising a huge TTL cannot pin a stale record |
 | `services` | `true` | Also mirror DNS-SD records (PTR/SRV/TXT), not just addresses |
@@ -97,6 +128,8 @@ config, not a fragment.
 | `bind` | `"0.0.0.0"` | Listener address |
 | `interfaces` | `[]` | Interface addresses to join the group on. Empty lets the kernel choose |
 | `debounce_secs` | `5` | Quiet window before a burst of announcements is written to the zone |
+| `peers` | `[]` | Sibling instances to mirror from (`ip` or `ip:port`, API port 8080). Empty derives them from this instance's DNS forwarders |
+| `peer_sync_secs` | `30` | How often to pull each sibling. `0` publishes only what this instance can hear |
 
 Filtering a noisy network down to what matters:
 

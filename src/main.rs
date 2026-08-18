@@ -508,7 +508,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        let source = microdns_mdns::MdnsSource::new(db.clone());
+        let source = microdns_mdns::MdnsSource::new(db.clone())
+            .with_instance_id(&config.instance.id);
         mdns_handle = Some(source.handle());
         let rx = shutdown_rx.clone();
         tasks.push(tokio::spawn(async move {

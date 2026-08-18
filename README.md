@@ -91,7 +91,7 @@ All instances are managed by **mkube** which auto-deploys from the container reg
 - **DHCPv6** — Stateful address assignment, prefix delegation
 - **SLAAC** — Router Advertisement daemon
 - **DNS Auto-Registration** — DHCP leases automatically create A/AAAA + PTR records with deduplication
-- **mDNS Ingest** — Learns `.local` names announced on the local segment and publishes them as authoritative records, so cross-subnet clients can resolve names that multicast (IP TTL 1) can never reach them ([docs](docs/mdns-ingest.md))
+- **mDNS Ingest** — Learns `.local` names announced on the local segment and publishes them as authoritative records, so cross-subnet clients can resolve names that multicast (IP TTL 1) can never reach them. Instances mirror each other's discoveries into one flat domain (`mdns.lo`), so a name resolves the same way from any network ([docs](docs/mdns-ingest.md))
 - **Record Provenance** — Every record carries a `source` (`manual`/`dhcp`/`mdns`/`k8s`); automatic sources prune only their own records and never shadow a curated one
 - **IPAM** — IP address management for container workloads
 - **Database-Driven Config** — All pools, reservations, forwarders stored in redb, managed via REST API
@@ -523,7 +523,7 @@ gate all DNS operations on this endpoint.
 
 Response (200):
 ```json
-{"status": "ok", "version": "0.7.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
+{"status": "ok", "version": "0.8.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
 ```
 
 Response (503):

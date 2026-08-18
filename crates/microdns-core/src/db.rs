@@ -1699,6 +1699,8 @@ mod tests {
             bind: "0.0.0.0".into(),
             interfaces: vec![],
             debounce_secs: 5,
+            peers: vec![],
+            peer_sync_secs: 30,
         };
         db.set_runtime_section("mdns", &cfg).unwrap();
 

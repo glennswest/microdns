@@ -36,6 +36,9 @@ pub struct Entry {
     pub expires_at: DateTime<Utc>,
     /// Address the announcement came from, for operator visibility.
     pub from: IpAddr,
+    /// Which sibling instance this was mirrored from, or `None` when this
+    /// instance heard it on its own segment.
+    pub via: Option<String>,
     /// Whether a maintenance re-query has already gone out for this lifetime.
     /// Reset every time the record is re-announced.
     pub(crate) refresh_sent: bool,
@@ -82,11 +85,23 @@ pub struct Stats {
     pub queries_sent: u64,
 }
 
+/// What one sibling instance last told us it could hear.
+#[derive(Debug, Clone)]
+pub struct PeerView {
+    pub entries: Vec<Entry>,
+    pub synced_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Default)]
 pub struct MdnsCache {
     /// Keyed by owner name and type; the vec holds one entry per distinct
     /// rdata, which is how a multi-homed host ends up with two A records.
     entries: HashMap<(String, RecordType), Vec<Entry>>,
+    /// Discoveries mirrored from sibling instances, by peer address. Held
+    /// apart from our own so that what this instance *heard* stays reportable,
+    /// and so mirrored names are never re-exported as if we heard them —
+    /// which is what stops two instances amplifying each other.
+    peers: HashMap<String, PeerView>,
     pub stats: Stats,
     pub last_packet_at: Option<DateTime<Utc>>,
 }
@@ -147,13 +162,19 @@ impl MdnsCache {
             last_seen: now,
             expires_at,
             from,
+            via: None,
             refresh_sent: false,
         });
         self.stats.records_learned += 1;
         Learned::New
     }
 
-    /// Drop everything past its lifetime. Returns how many entries went.
+    /// Drop everything past its lifetime, ours and mirrored alike. Returns how
+    /// many entries went.
+    ///
+    /// Mirrored entries expire on the lifetime their own instance reported, so
+    /// a peer that goes unreachable does not blank its names at once — they age
+    /// out exactly as they would have if it were still answering.
     pub fn expire(&mut self, now: DateTime<Utc>) -> usize {
         let mut removed = 0;
         self.entries.retain(|_, list| {
@@ -162,8 +183,58 @@ impl MdnsCache {
             removed += before - list.len();
             !list.is_empty()
         });
+        self.peers.retain(|_, view| {
+            let before = view.entries.len();
+            view.entries.retain(|e| e.expires_at > now);
+            removed += before - view.entries.len();
+            !view.entries.is_empty()
+        });
         self.stats.expired += removed as u64;
         removed
+    }
+
+    /// Replace what a peer last reported.
+    pub fn set_peer_entries(&mut self, peer: &str, entries: Vec<Entry>, now: DateTime<Utc>) {
+        if entries.is_empty() {
+            self.peers.remove(peer);
+            return;
+        }
+        self.peers.insert(
+            peer.to_string(),
+            PeerView {
+                entries,
+                synced_at: now,
+            },
+        );
+    }
+
+    /// Entries this instance heard itself.
+    pub fn local_len(&self) -> usize {
+        self.entries.values().map(Vec::len).sum()
+    }
+
+    /// Entries mirrored from siblings.
+    pub fn peer_len(&self) -> usize {
+        self.peers.values().map(|v| v.entries.len()).sum()
+    }
+
+    /// Everything to publish: heard here plus mirrored from siblings.
+    pub fn all_entries(&self) -> impl Iterator<Item = &Entry> {
+        self.entries
+            .values()
+            .flatten()
+            .chain(self.peers.values().flat_map(|v| v.entries.iter()))
+    }
+
+    /// Per-peer summary for the API: address, entries held, last sync.
+    pub fn peer_summary(&self) -> Vec<(String, usize, DateTime<Utc>)> {
+        let mut rows: Vec<_> = self
+            .peers
+            .iter()
+            .map(|(peer, view)| (peer.clone(), view.entries.len(), view.synced_at))
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
     }
 
     /// Names due for a maintenance re-query — those past `REFRESH_AT` of their
@@ -196,6 +267,7 @@ impl MdnsCache {
     /// from since.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.peers.clear();
         self.last_packet_at = None;
     }
 
@@ -333,6 +405,75 @@ mod tests {
             t0 + Duration::seconds(90),
         );
         assert_eq!(cache.take_refresh_due(t0 + Duration::seconds(175)).len(), 1);
+    }
+
+    fn mirrored(name: &str, ip: &str, ttl: u32, peer: &str, now: DateTime<Utc>) -> Entry {
+        Entry {
+            name: name.to_string(),
+            data: a(ip),
+            ttl,
+            first_seen: now,
+            last_seen: now,
+            expires_at: now + Duration::seconds(i64::from(ttl)),
+            from: ip.parse().unwrap(),
+            via: Some(peer.to_string()),
+            refresh_sent: true,
+        }
+    }
+
+    #[test]
+    fn mirrored_names_are_published_but_never_re_reported() {
+        let mut cache = MdnsCache::new();
+        let t0 = Utc::now();
+        cache.learn("here.local", a("192.168.8.10"), 120, ip("192.168.8.10"), t0);
+        cache.set_peer_entries(
+            "192.168.9.252:8080",
+            vec![mirrored("there.local", "192.168.9.134", 120, "192.168.9.252:8080", t0)],
+            t0,
+        );
+
+        // Published: both. Reported to siblings: only what we heard ourselves —
+        // otherwise two instances would echo each other's copies forever.
+        assert_eq!(cache.all_entries().count(), 2);
+        assert_eq!(cache.local_len(), 1);
+        assert_eq!(cache.peer_len(), 1);
+        let reported: Vec<_> = cache.entries().map(|e| e.name.clone()).collect();
+        assert_eq!(reported, vec!["here.local".to_string()]);
+    }
+
+    #[test]
+    fn a_mirrored_name_ages_out_on_its_own_deadline() {
+        let mut cache = MdnsCache::new();
+        let t0 = Utc::now();
+        cache.set_peer_entries(
+            "192.168.9.252:8080",
+            vec![mirrored("there.local", "192.168.9.134", 120, "192.168.9.252:8080", t0)],
+            t0,
+        );
+        assert_eq!(cache.peer_len(), 1);
+
+        // A peer that stops answering does not blank its names at once; they
+        // expire exactly as they would have if it were still reachable.
+        assert_eq!(cache.expire(t0 + Duration::seconds(60)), 0);
+        assert_eq!(cache.peer_len(), 1);
+        assert_eq!(cache.expire(t0 + Duration::seconds(121)), 1);
+        assert_eq!(cache.peer_len(), 0);
+    }
+
+    #[test]
+    fn a_peer_reporting_nothing_is_dropped_from_the_table() {
+        let mut cache = MdnsCache::new();
+        let t0 = Utc::now();
+        cache.set_peer_entries(
+            "192.168.9.252:8080",
+            vec![mirrored("there.local", "192.168.9.134", 120, "192.168.9.252:8080", t0)],
+            t0,
+        );
+        assert_eq!(cache.peer_summary().len(), 1);
+
+        cache.set_peer_entries("192.168.9.252:8080", vec![], t0);
+        assert!(cache.peer_summary().is_empty());
+        assert_eq!(cache.peer_len(), 0);
     }
 
     #[test]

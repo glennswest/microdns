@@ -36,6 +36,7 @@
 pub mod cache;
 pub mod config;
 pub mod parse;
+pub mod peers;
 pub mod publish;
 pub mod socket;
 pub mod translate;
@@ -104,6 +105,7 @@ enum SessionEnd {
 /// The mDNS source: listens, caches, and keeps its publish zone in sync.
 pub struct MdnsSource {
     db: Db,
+    instance_id: String,
     cache: Arc<Mutex<MdnsCache>>,
     current: Arc<Mutex<Option<MdnsConfig>>>,
 }
@@ -112,9 +114,17 @@ impl MdnsSource {
     pub fn new(db: Db) -> Self {
         Self {
             db,
+            instance_id: String::new(),
             cache: Arc::new(Mutex::new(MdnsCache::new())),
             current: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// This instance's id, so a derived peer list that includes this instance
+    /// is skipped rather than mirrored onto itself.
+    pub fn with_instance_id(mut self, id: &str) -> Self {
+        self.instance_id = id.to_string();
+        self
     }
 
     /// A handle the API can read the live discovery table through.
@@ -306,6 +316,18 @@ impl MdnsSource {
         config_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         config_tick.tick().await;
 
+        // Mirror what the other instances can hear, so this one zone answers
+        // for every network rather than only for this segment.
+        let sync = peers::PeerSync::new(&self.instance_id);
+        let mut peer_tick = tokio::time::interval(Duration::from_secs(
+            if config.peer_sync_secs == 0 {
+                86_400
+            } else {
+                config.peer_sync_secs
+            },
+        ));
+        peer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         let mut buf_v4 = vec![0u8; socket::MAX_PACKET];
         let mut buf_v6 = vec![0u8; socket::MAX_PACKET];
         let mut dirty = false;
@@ -337,7 +359,7 @@ impl MdnsSource {
                         let prune = started.elapsed() >= STARTUP_GRACE;
                         let desired = {
                             let cache = self.cache.lock().unwrap();
-                            translate::desired(cache.entries().cloned(), config)
+                            translate::desired(cache.all_entries().cloned(), config)
                         };
                         match publisher.apply(&desired, prune) {
                             Ok(_) => dirty = false,
@@ -362,6 +384,23 @@ impl MdnsSource {
                         questions.push((service, RecordType::PTR));
                     }
                     self.send_queries(config, &v4, &v6, &questions).await;
+                }
+                _ = peer_tick.tick(), if config.peer_sync_secs > 0 => {
+                    let peer_list = peers::resolve_peers(&self.db, &config.peers);
+                    for peer in &peer_list {
+                        // A peer that cannot be reached keeps whatever it last
+                        // told us; those names expire on their own TTL rather
+                        // than vanishing because one poll failed.
+                        if let Some(entries) = sync.poll(peer).await {
+                            let count = entries.len();
+                            let mut cache = self.cache.lock().unwrap();
+                            cache.set_peer_entries(peer, entries, Utc::now());
+                            debug!("mdns: mirrored {count} name(s) from {peer}");
+                        }
+                    }
+                    if !peer_list.is_empty() {
+                        dirty = true;
+                    }
                 }
                 _ = config_tick.tick() => {
                     if self.stored_config().as_ref() != Some(config) {
@@ -480,6 +519,8 @@ mod tests {
             bind: "0.0.0.0".into(),
             interfaces: vec![],
             debounce_secs: 5,
+            peers: vec![],
+            peer_sync_secs: 0,
         }
     }
 

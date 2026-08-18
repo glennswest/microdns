@@ -43,8 +43,10 @@ pub struct MdnsSourceConfig {
     /// happens to be shouting on their LAN because they upgraded.
     #[serde(default)]
     pub enabled: bool,
-    /// Zone discovered names are published into, e.g. `mdns.g9.lo`. A dedicated
-    /// subzone keeps discovered names visibly apart from curated ones.
+    /// Zone discovered names are published into. One flat domain shared by
+    /// every instance (the default) means a name resolves the same way from
+    /// anywhere, with no need to know which network the device sits on.
+    #[serde(default = "default_mdns_zone")]
     pub zone: String,
     /// Floor for the announced TTL. Responses to a legacy query carry a 10 s
     /// TTL (RFC 6762 §6.7); honouring that literally would churn the zone.
@@ -85,6 +87,16 @@ pub struct MdnsSourceConfig {
     /// the zone.
     #[serde(default = "default_mdns_debounce")]
     pub debounce_secs: u64,
+    /// Sibling instances to mirror discoveries from, as `ip` or `ip:port`
+    /// (API port, default 8080). Empty derives them from the DNS forwarders
+    /// this instance already has — one per sibling network — so a new network
+    /// needs no mDNS config of its own.
+    #[serde(default)]
+    pub peers: Vec<String>,
+    /// How often to pull each peer's discoveries. 0 turns mirroring off, which
+    /// leaves this instance publishing only what it can hear itself.
+    #[serde(default = "default_mdns_peer_sync")]
+    pub peer_sync_secs: u64,
 }
 
 /// Kubernetes DNS source — makes this instance authoritative for a cluster's
@@ -624,6 +636,12 @@ fn default_topic_prefix() -> String {
 }
 fn default_secondary_refresh() -> u64 {
     900
+}
+fn default_mdns_zone() -> String {
+    "mdns.lo".to_string()
+}
+fn default_mdns_peer_sync() -> u64 {
+    30
 }
 fn default_mdns_ttl_min() -> u32 {
     60
