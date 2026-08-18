@@ -100,6 +100,26 @@ Each instance forwards queries for peer zones to the peer's DNS server. If the p
 - **Cross-network forwarding**: All instances forward to all peer zones including reverse and utility zones
 - **stormdbase migration**: Container base switched from scratch to stormdbase for process supervision, SSH, health probes
 
+## In Progress — mDNS ingest (issue #8)
+
+Bridges mDNS (`.local`) announcements into authoritative unicast DNS so
+cross-subnet clients can resolve names that multicast (IP TTL 1) can never
+reach them. New crate `microdns-mdns`, modelled on `microdns-k8s`: a source
+that watches an external system and reconciles a zone it owns.
+
+- [ ] `RecordSource` on `Record` (manual / dhcp / mdns / k8s) — discovered
+      records are labelled, and a manual record always wins a conflict
+- [ ] `crates/microdns-mdns` — multicast socket, packet parse, TTL cache,
+      re-query before expiry, goodbye (TTL 0) handling, zone reconcile
+- [ ] `[mdns]` config block: `enabled`, `zone`, `ttl_max`, `ttl_min`,
+      `services`, `allow`/`deny`, `query_interval_secs`, `ipv6`
+- [ ] Wire into `src/main.rs` as a task alongside the k8s source
+- [ ] REST: `GET /api/v1/mdns/status`, `GET /api/v1/mdns/discovered`
+- [ ] Docs (`docs/mdns-ingest.md`, README), changelog, sample config
+- [ ] Release v0.5.0
+- [ ] Deploy to the g9/g8 instances and confirm `teslatracker-52c4` resolves
+      cross-subnet (the case issue #8 was filed for)
+
 ## TODO
 
 - [ ] Verify NXDOMAIN fix resolves `getent hosts` failures on clients
