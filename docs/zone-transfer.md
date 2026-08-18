@@ -5,10 +5,11 @@ finds out that the copy is stale within seconds rather than within an hour.
 
 ## The two halves
 
-| Direction | Config | What it does |
+| Direction | Setting | What it does |
 |---|---|---|
-| Primary → secondary | `[dns.auth] notify` | Announces "this zone changed" to each secondary the moment it happens |
-| Secondary → primary | `[[dns.auth.secondary]]` | Mirrors the zone over AXFR, driven by those announcements and by a fallback timer |
+| Primary → secondary | `notify` | Announces "this zone changed" to each secondary the moment it happens |
+| Secondary → primary | `secondary` | Mirrors the zone over AXFR, driven by those announcements and by a fallback timer |
+| Either | `allow_transfer` | CIDRs permitted to pull a full copy |
 
 Both are needed. A NOTIFY nobody acts on is noise; a secondary with no NOTIFY is
 only as fresh as its refresh interval — 3600 s on these zones, which is exactly
