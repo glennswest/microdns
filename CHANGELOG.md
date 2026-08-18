@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.6.1] - 2026-08-18
+
+### Fixed
+- **fix(dns):** A subzone's names are now resolved from the subzone rather than from whichever suffix-matching zone happened to come first. `query_fqdn` and `fqdn_exists` iterated zones and answered from the first match, so with both `g9.lo` and `mdns.g9.lo` present, a query for `teslatracker-52c4.mdns.g9.lo` could be answered from `g9.lo` — which holds nothing under that name — and return empty. Both now select the most specific (longest) matching zone, the way `find_zone_for_fqdn` already did. Found while verifying the mDNS rollout on g9: the records existed and neither the auth server nor the recursor would serve them
+
 ## [0.6.0] - 2026-08-18
 
 ### Added

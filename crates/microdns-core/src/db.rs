@@ -394,17 +394,21 @@ impl Db {
         let fqdn = fqdn.trim_end_matches('.');
         let zones = self.list_zones()?;
 
-        for zone in &zones {
-            let zone_name = zone.name.trim_end_matches('.');
-            if fqdn == zone_name {
-                // Zone apex — the zone itself exists
-                return self.name_exists_in_zone(&zone.id, "@");
-            } else if let Some(prefix) = fqdn.strip_suffix(&format!(".{zone_name}")) {
-                return self.name_exists_in_zone(&zone.id, prefix);
-            }
-        }
+        // Same rule as `query_fqdn`: the most specific zone decides, or the
+        // NOERROR/NXDOMAIN distinction would be taken from the wrong zone.
+        let Some(zone) = most_specific_zone(&zones, fqdn) else {
+            return Ok(false);
+        };
+        let zone_name = zone.name.trim_end_matches('.');
 
-        Ok(false)
+        if fqdn == zone_name {
+            // Zone apex — the zone itself exists
+            return self.name_exists_in_zone(&zone.id, "@");
+        }
+        match fqdn.strip_suffix(&format!(".{zone_name}")) {
+            Some(prefix) => self.name_exists_in_zone(&zone.id, prefix),
+            None => Ok(false),
+        }
     }
 
     /// List all records in a zone
@@ -557,41 +561,48 @@ impl Db {
         let fqdn = fqdn.trim_end_matches('.');
         let zones = self.list_zones()?;
 
-        for zone in &zones {
-            let zone_name = zone.name.trim_end_matches('.');
-            if fqdn == zone_name {
-                // Zone apex query
-                return self.query_records(&zone.id, "@", rtype);
-            } else if let Some(prefix) = fqdn.strip_suffix(&format!(".{zone_name}")) {
-                // Try exact match first
-                let exact = self.query_records(&zone.id, prefix, rtype)?;
-                if !exact.is_empty() {
-                    return Ok(exact);
-                }
+        // The most specific zone owns the name. Answering from the first zone
+        // that merely shares a suffix would let `g9.lo` swallow every query for
+        // `<host>.mdns.g9.lo` and answer that nothing is there.
+        let Some(zone) = most_specific_zone(&zones, fqdn) else {
+            return Ok(Vec::new());
+        };
+        let zone_name = zone.name.trim_end_matches('.');
 
-                // Wildcard fallback: try replacing leading labels with `*`
-                // e.g. for prefix "a.b.c", try "*.b.c", then "*.c", then "*"
-                let mut remaining = prefix;
-                loop {
-                    let wildcard = if let Some(pos) = remaining.find('.') {
-                        format!("*{}", &remaining[pos..])
-                    } else {
-                        "*".to_string()
-                    };
+        if fqdn == zone_name {
+            // Zone apex query
+            return self.query_records(&zone.id, "@", rtype);
+        }
 
-                    let wild_result = self.query_records(&zone.id, &wildcard, rtype)?;
-                    if !wild_result.is_empty() {
-                        return Ok(wild_result);
-                    }
+        let Some(prefix) = fqdn.strip_suffix(&format!(".{zone_name}")) else {
+            return Ok(Vec::new());
+        };
 
-                    // Move up one label
-                    match remaining.find('.') {
-                        Some(pos) => remaining = &remaining[pos + 1..],
-                        None => break,
-                    }
-                }
+        // Try exact match first
+        let exact = self.query_records(&zone.id, prefix, rtype)?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
 
-                return Ok(Vec::new());
+        // Wildcard fallback: try replacing leading labels with `*`
+        // e.g. for prefix "a.b.c", try "*.b.c", then "*.c", then "*"
+        let mut remaining = prefix;
+        loop {
+            let wildcard = if let Some(pos) = remaining.find('.') {
+                format!("*{}", &remaining[pos..])
+            } else {
+                "*".to_string()
+            };
+
+            let wild_result = self.query_records(&zone.id, &wildcard, rtype)?;
+            if !wild_result.is_empty() {
+                return Ok(wild_result);
+            }
+
+            // Move up one label
+            match remaining.find('.') {
+                Some(pos) => remaining = &remaining[pos + 1..],
+                None => break,
             }
         }
 
@@ -1092,21 +1103,8 @@ impl Db {
 
     /// Get the zone that owns a given FQDN
     pub fn find_zone_for_fqdn(&self, fqdn: &str) -> Result<Option<Zone>> {
-        let fqdn = fqdn.trim_end_matches('.');
         let zones = self.list_zones()?;
-
-        // Find the most specific (longest) matching zone
-        let mut best: Option<&Zone> = None;
-        for zone in &zones {
-            let zone_name = zone.name.trim_end_matches('.');
-            if (fqdn == zone_name || fqdn.ends_with(&format!(".{zone_name}")))
-                && (best.is_none() || zone.name.len() > best.unwrap().name.len())
-            {
-                best = Some(zone);
-            }
-        }
-
-        Ok(best.cloned())
+        Ok(most_specific_zone(&zones, fqdn).cloned())
     }
 
     // ─── Load-balancer persisted health state ────────────────────────────────
@@ -1213,6 +1211,28 @@ impl Db {
         write_txn.commit()?;
         Ok(())
     }
+}
+
+/// The zone that owns `fqdn` — the longest suffix match, which is the zone a
+/// resolver would consider authoritative for the name.
+///
+/// Suffix matching alone is not enough once subzones exist: `mdns.g9.lo` and
+/// `g9.lo` both match `host.mdns.g9.lo`, and only the first is authoritative
+/// for it.
+fn most_specific_zone<'a>(zones: &'a [Zone], fqdn: &str) -> Option<&'a Zone> {
+    let fqdn = fqdn.trim_end_matches('.').to_lowercase();
+    let mut best: Option<&Zone> = None;
+    for zone in zones {
+        let zone_name = zone.name.trim_end_matches('.').to_lowercase();
+        let matches = fqdn == zone_name || fqdn.ends_with(&format!(".{zone_name}"));
+        if !matches {
+            continue;
+        }
+        if best.is_none_or(|current| zone_name.len() > current.name.trim_end_matches('.').len()) {
+            best = Some(zone);
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -1593,6 +1613,67 @@ mod tests {
 
         db.delete_dns_forwarder("corp.local").unwrap();
         assert!(db.get_dns_forwarder("corp.local").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_subzone_owns_its_names_rather_than_its_parent() {
+        let (db, _dir) = test_db();
+
+        // The parent zone and a subzone of it both exist — the shape mDNS
+        // ingest creates (g9.lo plus mdns.g9.lo).
+        let parent = make_zone("g9.lo");
+        db.create_zone("g9.lo", &parent).unwrap();
+        let child = make_zone("mdns.g9.lo");
+        db.create_zone("mdns.g9.lo", &child).unwrap();
+
+        db.create_record(&make_record(
+            child.id,
+            "teslatracker-52c4",
+            RecordData::A("192.168.9.134".parse().unwrap()),
+        ))
+        .unwrap();
+        db.create_record(&make_record(
+            parent.id,
+            "boot",
+            RecordData::A("192.168.9.5".parse().unwrap()),
+        ))
+        .unwrap();
+
+        // The subzone's record resolves even though the parent also matches by
+        // suffix and holds nothing under that name.
+        let found = db
+            .query_fqdn("teslatracker-52c4.mdns.g9.lo", RecordType::A)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].data, RecordData::A("192.168.9.134".parse().unwrap()));
+        assert!(db.fqdn_exists("teslatracker-52c4.mdns.g9.lo").unwrap());
+
+        // The parent still answers for its own names.
+        let found = db.query_fqdn("boot.g9.lo", RecordType::A).unwrap();
+        assert_eq!(found.len(), 1);
+
+        // And the owning zone is the subzone, not the parent.
+        let zone = db
+            .find_zone_for_fqdn("teslatracker-52c4.mdns.g9.lo")
+            .unwrap()
+            .unwrap();
+        assert_eq!(zone.name, "mdns.g9.lo");
+    }
+
+    #[test]
+    fn a_name_in_no_zone_resolves_to_nothing() {
+        let (db, _dir) = test_db();
+        let zone = make_zone("g9.lo");
+        db.create_zone("g9.lo", &zone).unwrap();
+
+        assert!(db
+            .query_fqdn("host.example.com", RecordType::A)
+            .unwrap()
+            .is_empty());
+        assert!(!db.fqdn_exists("host.example.com").unwrap());
+        // A zone name is not a suffix match for a *longer* zone name either:
+        // "notg9.lo" must not be captured by "g9.lo".
+        assert!(db.find_zone_for_fqdn("host.notg9.lo").unwrap().is_none());
     }
 
     #[test]

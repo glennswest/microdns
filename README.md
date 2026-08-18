@@ -521,7 +521,7 @@ gate all DNS operations on this endpoint.
 
 Response (200):
 ```json
-{"status": "ok", "version": "0.6.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
+{"status": "ok", "version": "0.6.1", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
 ```
 
 Response (503):
