@@ -9,6 +9,7 @@ members = [
     "crates/microdns-msg",
     "crates/microdns-federation",
     "crates/microdns-k8s",
+    "crates/microdns-mdns",
 ]
 resolver = "2"
 
@@ -101,6 +102,7 @@ microdns-dhcp = { path = "crates/microdns-dhcp" }
 microdns-msg = { path = "crates/microdns-msg" }
 microdns-federation = { path = "crates/microdns-federation" }
 microdns-k8s = { path = "crates/microdns-k8s" }
+microdns-mdns = { path = "crates/microdns-mdns" }
 
 [package]
 name = "microdns"
@@ -121,6 +123,7 @@ microdns-dhcp.workspace = true
 microdns-msg.workspace = true
 microdns-federation.workspace = true
 microdns-k8s.workspace = true
+microdns-mdns.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true
