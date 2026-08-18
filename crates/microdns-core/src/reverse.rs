@@ -6,7 +6,7 @@
 
 use crate::db::Db;
 use crate::error::Result;
-use crate::types::{Record, RecordData, RecordType, SoaData, Zone};
+use crate::types::{Record, RecordData, RecordSource, RecordType, SoaData, Zone};
 use chrono::Utc;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::debug;
@@ -112,12 +112,15 @@ pub fn ensure_reverse_zone(db: &Db, zone_name: &str) -> Result<Zone> {
 
 /// Create or update the PTR record for an A record.
 /// Auto-creates the reverse zone if it doesn't exist.
+/// `source` is carried through to the PTR so it is labelled with whatever
+/// created the forward record it mirrors.
 pub fn sync_ptr_for_a(
     db: &Db,
     record_name: &str,
     forward_zone_name: &str,
     ip: Ipv4Addr,
     ttl: u32,
+    source: RecordSource,
 ) -> Result<()> {
     let rev_zone_name = reverse_zone_v4(ip);
     let rev_zone = ensure_reverse_zone(db, &rev_zone_name)?;
@@ -144,6 +147,7 @@ pub fn sync_ptr_for_a(
         data: ptr_data,
         enabled: true,
         health_check: None,
+        source,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -191,6 +195,7 @@ pub fn sync_ptr_for_aaaa(
     forward_zone_name: &str,
     ip: Ipv6Addr,
     ttl: u32,
+    source: RecordSource,
 ) -> Result<()> {
     let rev_zone_name = reverse_zone_v6(ip);
     let rev_zone = ensure_reverse_zone(db, &rev_zone_name)?;
@@ -215,6 +220,7 @@ pub fn sync_ptr_for_aaaa(
         data: ptr_data,
         enabled: true,
         health_check: None,
+        source,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -262,14 +268,17 @@ pub fn sync_reverse_record(
     forward_zone_name: &str,
     data: &RecordData,
     ttl: u32,
+    source: RecordSource,
 ) -> Result<()> {
     if is_reverse_zone(forward_zone_name) {
         return Ok(());
     }
 
     match data {
-        RecordData::A(ip) => sync_ptr_for_a(db, record_name, forward_zone_name, *ip, ttl),
-        RecordData::AAAA(ip) => sync_ptr_for_aaaa(db, record_name, forward_zone_name, *ip, ttl),
+        RecordData::A(ip) => sync_ptr_for_a(db, record_name, forward_zone_name, *ip, ttl, source),
+        RecordData::AAAA(ip) => {
+            sync_ptr_for_aaaa(db, record_name, forward_zone_name, *ip, ttl, source)
+        }
         _ => Ok(()),
     }
 }
@@ -381,7 +390,7 @@ mod tests {
         let ip: Ipv4Addr = "192.168.10.5".parse().unwrap();
 
         // Sync creates reverse zone and PTR
-        sync_ptr_for_a(&db, "server1", "g10.lo", ip, 300).unwrap();
+        sync_ptr_for_a(&db, "server1", "g10.lo", ip, 300, RecordSource::Dhcp).unwrap();
 
         let rev_zone = db
             .get_zone_by_name("10.168.192.in-addr.arpa")
@@ -392,12 +401,12 @@ mod tests {
         assert_eq!(ptrs[0].data, RecordData::PTR("server1.g10.lo.".to_string()));
 
         // Idempotent — second sync doesn't duplicate
-        sync_ptr_for_a(&db, "server1", "g10.lo", ip, 300).unwrap();
+        sync_ptr_for_a(&db, "server1", "g10.lo", ip, 300, RecordSource::Dhcp).unwrap();
         let ptrs = db.query_records(&rev_zone.id, "5", RecordType::PTR).unwrap();
         assert_eq!(ptrs.len(), 1);
 
         // Different hostname overwrites (one IP = one PTR)
-        sync_ptr_for_a(&db, "server2", "g10.lo", ip, 300).unwrap();
+        sync_ptr_for_a(&db, "server2", "g10.lo", ip, 300, RecordSource::Dhcp).unwrap();
         let ptrs = db.query_records(&rev_zone.id, "5", RecordType::PTR).unwrap();
         assert_eq!(ptrs.len(), 1);
         assert_eq!(ptrs[0].data, RecordData::PTR("server2.g10.lo.".to_string()));
@@ -419,6 +428,7 @@ mod tests {
             "168.192.in-addr.arpa",
             &RecordData::A("192.168.10.10".parse().unwrap()),
             300,
+            RecordSource::Manual,
         );
         assert!(result.is_ok());
 
@@ -441,6 +451,7 @@ mod tests {
             "example.com",
             &RecordData::CNAME("other.example.com.".to_string()),
             300,
+            RecordSource::Manual,
         );
         assert!(result.is_ok());
 
@@ -464,7 +475,7 @@ mod tests {
         make_forward_zone(&db, "g10.lo");
 
         let ip: Ipv4Addr = "192.168.10.1".parse().unwrap();
-        sync_ptr_for_a(&db, "@", "g10.lo", ip, 300).unwrap();
+        sync_ptr_for_a(&db, "@", "g10.lo", ip, 300, RecordSource::Manual).unwrap();
 
         let rev_zone = db
             .get_zone_by_name("10.168.192.in-addr.arpa")

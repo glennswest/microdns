@@ -2,7 +2,7 @@ use chrono::Utc;
 use microdns_core::db::Db;
 use microdns_core::error::Result;
 use microdns_core::reverse;
-use microdns_core::types::{Record, RecordData, RecordType};
+use microdns_core::types::{Record, RecordData, RecordSource, RecordType};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -85,6 +85,7 @@ impl DnsRegistrar {
             data: desired,
             enabled: true,
             health_check: None,
+            source: RecordSource::Dhcp,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -92,7 +93,14 @@ impl DnsRegistrar {
         debug!("registered A record: {hostname}.{} -> {ip}", self.forward_zone);
 
         // Auto-sync reverse PTR (creates reverse zone if needed)
-        if let Err(e) = reverse::sync_ptr_for_a(&self.db, hostname, &self.forward_zone, ip, self.default_ttl) {
+        if let Err(e) = reverse::sync_ptr_for_a(
+            &self.db,
+            hostname,
+            &self.forward_zone,
+            ip,
+            self.default_ttl,
+            RecordSource::Dhcp,
+        ) {
             warn!("reverse PTR sync failed for {hostname} -> {ip}: {e}");
         }
 
@@ -135,6 +143,7 @@ impl DnsRegistrar {
             data: desired,
             enabled: true,
             health_check: None,
+            source: RecordSource::Dhcp,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -145,7 +154,14 @@ impl DnsRegistrar {
         );
 
         // Auto-sync reverse PTR (creates reverse zone if needed)
-        if let Err(e) = reverse::sync_ptr_for_aaaa(&self.db, hostname, &self.forward_zone, ip, self.default_ttl) {
+        if let Err(e) = reverse::sync_ptr_for_aaaa(
+            &self.db,
+            hostname,
+            &self.forward_zone,
+            ip,
+            self.default_ttl,
+            RecordSource::Dhcp,
+        ) {
             warn!("reverse PTR sync failed for {hostname} -> {ip}: {e}");
         }
 

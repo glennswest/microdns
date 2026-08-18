@@ -128,6 +128,50 @@ pub struct Zone {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Where a record came from.
+///
+/// Automatic sources own the records they create: they reconcile them, and
+/// they prune them when the underlying thing goes away. `Manual` records are
+/// never touched by a source, and a source must not publish a name that would
+/// shadow one — an operator-curated record always wins a conflict with a
+/// discovered one.
+///
+/// Rows written before this field existed deserialize as `Manual`, which is
+/// the safe reading: nothing automatic may delete them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordSource {
+    /// Created by an operator through the REST/gRPC API, a zone transfer, or
+    /// bootstrap config.
+    #[default]
+    Manual,
+    /// Auto-registered from a DHCP lease or reservation.
+    Dhcp,
+    /// Discovered from an mDNS announcement on the local segment.
+    Mdns,
+    /// Generated from Kubernetes API objects by the cluster DNS source.
+    K8s,
+}
+
+impl std::fmt::Display for RecordSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecordSource::Manual => write!(f, "manual"),
+            RecordSource::Dhcp => write!(f, "dhcp"),
+            RecordSource::Mdns => write!(f, "mdns"),
+            RecordSource::K8s => write!(f, "k8s"),
+        }
+    }
+}
+
+impl RecordSource {
+    /// Whether an automatic source created this record — i.e. whether that
+    /// source is free to update or delete it.
+    pub fn is_automatic(&self) -> bool {
+        !matches!(self, RecordSource::Manual)
+    }
+}
+
 /// A DNS record within a zone
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -139,6 +183,10 @@ pub struct Record {
     pub enabled: bool,
     /// Health check configuration for load balancer
     pub health_check: Option<HealthCheck>,
+    /// What created this record. Defaults to `Manual` so records stored before
+    /// this field existed are never mistaken for something a source may prune.
+    #[serde(default)]
+    pub source: RecordSource,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -6,7 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 use microdns_core::reverse;
-use microdns_core::types::{HealthCheck, Record, RecordData};
+use microdns_core::types::{HealthCheck, Record, RecordData, RecordSource};
 use microdns_msg::events::{ChangeAction, Event};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -34,6 +34,9 @@ struct RecordResponse {
     data: RecordData,
     enabled: bool,
     health_check: Option<HealthCheck>,
+    /// What created this record — `manual`, `dhcp`, `mdns` or `k8s`. Clients
+    /// use it to tell curated records from auto-discovered ones.
+    source: RecordSource,
     created_at: String,
     updated_at: String,
 }
@@ -49,6 +52,7 @@ impl RecordResponse {
             data: r.data,
             enabled: r.enabled,
             health_check: r.health_check,
+            source: r.source,
             created_at: r.created_at.to_rfc3339(),
             updated_at: r.updated_at.to_rfc3339(),
         }
@@ -139,6 +143,9 @@ async fn create_record(
         data: req.data,
         enabled: req.enabled,
         health_check: req.health_check,
+        // Anything created through the API is operator-curated, so an
+        // automatic source may neither prune it nor shadow it.
+        source: RecordSource::Manual,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -158,6 +165,7 @@ async fn create_record(
         &zone.name,
         &record.data,
         record.ttl,
+        record.source,
     ) {
         tracing::warn!("reverse zone sync failed for {}: {e}", record.name);
     }
@@ -262,6 +270,7 @@ async fn update_record(
                 &zone.name,
                 &record.data,
                 record.ttl,
+                record.source,
             ) {
                 tracing::warn!("reverse zone sync failed for {}: {e}", record.name);
             }

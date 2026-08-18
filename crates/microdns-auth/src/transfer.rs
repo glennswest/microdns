@@ -4,7 +4,7 @@ use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RData, Record as DnsRecord, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use microdns_core::db::Db;
-use microdns_core::types::{Record, SoaData, Zone};
+use microdns_core::types::{Record, RecordSource, SoaData, Zone};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -255,6 +255,7 @@ impl ZoneTransfer {
                 data,
                 enabled: true,
                 health_check: None,
+                source: RecordSource::Manual,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             };

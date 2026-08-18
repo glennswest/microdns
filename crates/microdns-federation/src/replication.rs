@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use crate::proto;
 use microdns_core::config::{PeerConfig, ReplicationConfig};
 use microdns_core::db::Db;
-use microdns_core::types::{Record, RecordData, ReplicationMeta, SoaData, Zone};
+use microdns_core::types::{Record, RecordData, RecordSource, ReplicationMeta, SoaData, Zone};
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -282,6 +282,7 @@ fn proto_record_to_domain(pr: &proto::Record) -> anyhow::Result<Record> {
         data,
         enabled: pr.enabled,
         health_check: None,
+        source: RecordSource::Manual,
         created_at,
         updated_at,
     })

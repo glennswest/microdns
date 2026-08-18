@@ -333,6 +333,7 @@ mod tests {
             data: RD::A(ip.parse().unwrap()),
             enabled: true,
             health_check: None,
+            source: microdns_core::types::RecordSource::Manual,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })

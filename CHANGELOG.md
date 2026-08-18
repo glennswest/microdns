@@ -14,6 +14,7 @@
 ## [Unreleased]
 
 ### 2026-08-17
+- **feat(core):** Records now record their origin — new `RecordSource` (`manual` / `dhcp` / `mdns` / `k8s`) on `Record`, surfaced as `source` in the REST record JSON. Automatic sources own what they create and may prune it; `manual` records are never touched by a source and win any conflict with an auto-discovered name. Rows written before the field existed deserialize as `manual`, which is the safe reading. DHCP auto-registration and the Kubernetes source now label their records (and the PTRs they sync) accordingly
 - **feat(auth):** AXFR is now access-controlled and chunked. `[dns.auth] allow_transfer` takes a list of CIDRs (default: RFC1918 + loopback) and any TCP peer outside them gets REFUSED before a single record is read — an AXFR hands over a complete map of internal hosts. Transfers are also split into messages of 100 records (RFC 5936 §2.2) instead of one giant message, so a large zone can no longer overflow the 16-bit TCP length prefix and silently corrupt the transfer
 - **feat(auth):** Outbound DNS NOTIFY sender (`microdns-auth::notify::Notifier`, RFC 1996) with `[dns.auth] notify` config listing secondaries as `ip` or `ip:port`. Collapses a secondary's change-detection latency from the 3600 s SOA refresh to seconds. The module and config are in place; wiring it to the record-write path is still outstanding
 

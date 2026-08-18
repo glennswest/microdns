@@ -1,7 +1,7 @@
 use super::proto;
 use crate::security::validate_dns_name;
 use microdns_core::db::Db;
-use microdns_core::types::{Lease, LeaseState, Record, RecordData, SoaData, Zone};
+use microdns_core::types::{Lease, LeaseState, Record, RecordData, RecordSource, SoaData, Zone};
 use microdns_federation::heartbeat::HeartbeatTracker;
 use redb::{ReadableTable, TableDefinition};
 use std::sync::Arc;
@@ -224,6 +224,7 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
             data,
             enabled: req.enabled,
             health_check: None,
+            source: RecordSource::Manual,
             created_at: now,
             updated_at: now,
         };

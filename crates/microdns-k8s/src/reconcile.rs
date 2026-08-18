@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use microdns_core::db::Db;
 use microdns_core::reverse;
-use microdns_core::types::{Record, RecordData, SoaData, Zone};
+use microdns_core::types::{Record, RecordData, RecordSource, SoaData, Zone};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -59,6 +59,7 @@ impl Reconciler {
                 data: d.data.clone(),
                 enabled: true,
                 health_check: None,
+                source: RecordSource::K8s,
                 created_at: now,
                 updated_at: now,
             })
@@ -100,6 +101,7 @@ impl Reconciler {
                     &self.cluster_domain,
                     *v4,
                     self.default_ttl,
+                    RecordSource::K8s,
                 ),
                 IpAddr::V6(v6) => reverse::sync_ptr_for_aaaa(
                     &self.db,
@@ -107,6 +109,7 @@ impl Reconciler {
                     &self.cluster_domain,
                     *v6,
                     self.default_ttl,
+                    RecordSource::K8s,
                 ),
             };
             if let Err(e) = res {
