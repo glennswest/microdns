@@ -15,15 +15,21 @@
 //! It runs in-process as one task of the microdns binary, the same way the
 //! Kubernetes source does, and shares the process's redb database.
 //!
+//! Its configuration lives in the database (`runtime_config`, section `mdns`)
+//! rather than in the process, so the source is a supervisor: it follows
+//! whatever the stored config currently says, starting, stopping and re-homing
+//! its zone without a restart. Deployments whose TOML is generated for them —
+//! mkube renders one per network — can therefore turn discovery on through the
+//! API, and have it stay on.
+//!
 //! ```no_run
 //! # async fn run() -> anyhow::Result<()> {
 //! use microdns_core::db::Db;
-//! use microdns_mdns::{MdnsConfig, MdnsSource};
+//! use microdns_mdns::MdnsSource;
 //!
 //! let db = Db::open(std::path::Path::new("microdns.redb"))?;
 //! let (_tx, shutdown) = tokio::sync::watch::channel(false);
-//! let config = MdnsConfig { zone: "mdns.g9.lo".into(), ..Default::default() };
-//! MdnsSource::new(db, config).run(shutdown).await?;
+//! MdnsSource::new(db).run(shutdown).await?;
 //! # Ok(()) }
 //! ```
 
@@ -40,6 +46,7 @@ use std::time::Duration;
 use chrono::Utc;
 use hickory_proto::op::Message;
 use hickory_proto::serialize::binary::BinDecodable;
+use microdns_core::config::MdnsSourceConfig;
 use microdns_core::db::Db;
 use microdns_core::types::RecordType;
 use tokio::net::UdpSocket;
@@ -51,8 +58,11 @@ pub use config::MdnsConfig;
 pub use publish::Applied;
 pub use translate::DesiredRecord;
 
-/// How long after startup the source publishes without withdrawing. The cache
-/// starts empty on every restart, and an empty cache is not evidence that a
+/// Database section the stored configuration lives under.
+pub const CONFIG_SECTION: &str = "mdns";
+
+/// How long after starting to listen the source publishes without withdrawing.
+/// The cache starts empty every time, and an empty cache is not evidence that a
 /// device has gone away — only that nothing has spoken yet.
 const STARTUP_GRACE: Duration = Duration::from_secs(45);
 
@@ -60,27 +70,50 @@ const STARTUP_GRACE: Duration = Duration::from_secs(45);
 /// cannot turn into a burst of multicast traffic.
 const MAX_REFRESH_PER_TICK: usize = 20;
 
+/// How often the stored configuration is re-read. Cheap: redb is memory-mapped,
+/// so this is a read of one small value.
+const CONFIG_POLL: Duration = Duration::from_secs(10);
+
 /// Live view of the source, shared with the REST API.
 #[derive(Clone)]
 pub struct MdnsHandle {
     pub cache: Arc<Mutex<MdnsCache>>,
-    pub zone: String,
-    pub config: Arc<MdnsConfig>,
+    /// Config the source is running under right now, or `None` while disabled.
+    pub current: Arc<Mutex<Option<MdnsConfig>>>,
+}
+
+impl MdnsHandle {
+    /// Config to interpret the cache with — the live one while running, and the
+    /// defaults otherwise, so a disabled source still renders a sane table.
+    pub fn config(&self) -> MdnsConfig {
+        self.current.lock().unwrap().clone().unwrap_or_default()
+    }
+
+    /// Zone being published to, or `None` while the source is disabled.
+    pub fn zone(&self) -> Option<String> {
+        self.current.lock().unwrap().as_ref().map(|c| c.zone.clone())
+    }
+}
+
+/// Why a listening session ended.
+enum SessionEnd {
+    ConfigChanged,
+    Shutdown,
 }
 
 /// The mDNS source: listens, caches, and keeps its publish zone in sync.
 pub struct MdnsSource {
     db: Db,
-    config: MdnsConfig,
     cache: Arc<Mutex<MdnsCache>>,
+    current: Arc<Mutex<Option<MdnsConfig>>>,
 }
 
 impl MdnsSource {
-    pub fn new(db: Db, config: MdnsConfig) -> Self {
+    pub fn new(db: Db) -> Self {
         Self {
             db,
-            config,
             cache: Arc::new(Mutex::new(MdnsCache::new())),
+            current: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -88,17 +121,141 @@ impl MdnsSource {
     pub fn handle(&self) -> MdnsHandle {
         MdnsHandle {
             cache: self.cache.clone(),
-            zone: self.config.zone.clone(),
-            config: Arc::new(self.config.clone()),
+            current: self.current.clone(),
         }
     }
 
-    /// Listen and reconcile until `shutdown` flips to `true`.
+    /// Copy a bootstrap `[mdns]` block into the database if nothing is stored
+    /// yet, mirroring how pools and forwarders are seeded from TOML. Returns
+    /// whether anything was written.
+    pub fn bootstrap(db: &Db, config: &MdnsSourceConfig) -> anyhow::Result<bool> {
+        if db
+            .get_runtime_section::<MdnsSourceConfig>(CONFIG_SECTION)?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        db.set_runtime_section(CONFIG_SECTION, config)?;
+        Ok(true)
+    }
+
+    /// Follow the stored configuration until shutdown: listen while it says
+    /// enabled, idle while it does not, and re-home the zone when it changes.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let v4 = socket::bind_v4(&self.config)?;
+        loop {
+            match self.stored_config() {
+                Some(config) if config.enabled => {
+                    *self.current.lock().unwrap() = Some(config.clone());
+                    let end = self.session(&config, &mut shutdown).await;
+                    *self.current.lock().unwrap() = None;
+                    self.cache.lock().unwrap().clear();
+
+                    match end {
+                        Ok(SessionEnd::Shutdown) => return Ok(()),
+                        Ok(SessionEnd::ConfigChanged) => {
+                            // Whatever was published came from this instance's
+                            // authority. If the new config does not cover it,
+                            // it must not be left behind claiming to be current.
+                            self.withdraw(&config);
+                            info!("mdns: configuration changed; reloading");
+                        }
+                        Err(e) => {
+                            // A listener that cannot bind (no multicast on this
+                            // interface, port already taken) must not take DNS
+                            // down and must not spin: report it, then wait for
+                            // the configuration to change.
+                            warn!("mdns: listener stopped: {e}");
+                            if self.wait_for_change(&mut shutdown, Some(&config)).await {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                other => {
+                    if let Some(config) = other {
+                        // Turned off explicitly: take the discovered names with
+                        // it rather than leaving a frozen copy behind.
+                        self.withdraw(&config);
+                    }
+                    if self.wait_for_change(&mut shutdown, None).await {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read the stored configuration, or `None` when nothing is stored.
+    fn stored_config(&self) -> Option<MdnsConfig> {
+        match self
+            .db
+            .get_runtime_section::<MdnsSourceConfig>(CONFIG_SECTION)
+        {
+            Ok(Some(stored)) => Some(MdnsConfig::from(&stored)),
+            Ok(None) => None,
+            Err(e) => {
+                warn!("mdns: could not read stored config: {e}");
+                None
+            }
+        }
+    }
+
+    /// Wait until the stored config differs from `previous`, or until shutdown.
+    /// Returns true when shutdown won.
+    async fn wait_for_change(
+        &self,
+        shutdown: &mut watch::Receiver<bool>,
+        previous: Option<&MdnsConfig>,
+    ) -> bool {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(CONFIG_POLL) => {
+                    let now = self.stored_config();
+                    let changed = match (previous, &now) {
+                        (Some(before), Some(after)) => before != after,
+                        // Nothing was stored before: only an enabled config is
+                        // worth waking for.
+                        (None, Some(after)) => after.enabled,
+                        (Some(_), None) => true,
+                        (None, None) => false,
+                    };
+                    if changed {
+                        return false;
+                    }
+                }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove everything this source published under `config`.
+    fn withdraw(&self, config: &MdnsConfig) {
+        match publish::Publisher::new(self.db.clone(), config)
+            .and_then(|publisher| publisher.withdraw_all())
+        {
+            Ok(0) => {}
+            Ok(n) => info!(
+                "mdns: withdrew {n} discovered record(s) from {}",
+                config.zone
+            ),
+            Err(e) => warn!("mdns: could not withdraw records from {}: {e}", config.zone),
+        }
+    }
+
+    /// One listening session under a fixed configuration.
+    async fn session(
+        &self,
+        config: &MdnsConfig,
+        shutdown: &mut watch::Receiver<bool>,
+    ) -> anyhow::Result<SessionEnd> {
+        let v4 = socket::bind_v4(config)?;
         let port = v4.local_addr()?.port();
-        let v6 = if self.config.ipv6 {
-            match socket::bind_v6(&self.config) {
+        let v6 = if config.ipv6 {
+            match socket::bind_v6(config) {
                 Ok(sock) => Some(sock),
                 // A host without IPv6 configured is a normal deployment, not a
                 // reason to give up the IPv4 half of the feature.
@@ -111,34 +268,43 @@ impl MdnsSource {
             None
         };
 
-        let mut publisher = publish::Publisher::new(self.db.clone(), &self.config)?;
+        let mut publisher = publish::Publisher::new(self.db.clone(), config)?;
         info!(
             "mdns: listening on {}:{} — publishing discovered .local names into {}",
-            self.config.bind,
+            config.bind,
             port,
             publisher.zone_name()
         );
 
         // Ask straight away rather than waiting a full interval: at startup the
         // cache is empty and everything interesting has already announced.
-        self.send_queries(&v4, &v6, &[(SERVICE_ENUMERATION.to_string(), RecordType::PTR)])
-            .await;
+        self.send_queries(
+            config,
+            &v4,
+            &v6,
+            &[(SERVICE_ENUMERATION.to_string(), RecordType::PTR)],
+        )
+        .await;
 
         let started = tokio::time::Instant::now();
         let mut reconcile_tick =
-            tokio::time::interval(Duration::from_secs(self.config.debounce_secs.max(1)));
+            tokio::time::interval(Duration::from_secs(config.debounce_secs.max(1)));
         reconcile_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut query_tick = tokio::time::interval(Duration::from_secs(
             // A zero interval means passive-only; the timer still has to have a
             // valid period, so it is parked far enough out never to matter.
-            if self.config.query_interval_secs == 0 {
+            if config.query_interval_secs == 0 {
                 86_400
             } else {
-                self.config.query_interval_secs
+                config.query_interval_secs
             },
         ));
         query_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         query_tick.tick().await; // the first tick is immediate; we just queried
+
+        let mut config_tick = tokio::time::interval(CONFIG_POLL);
+        config_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        config_tick.tick().await;
 
         let mut buf_v4 = vec![0u8; socket::MAX_PACKET];
         let mut buf_v6 = vec![0u8; socket::MAX_PACKET];
@@ -149,7 +315,7 @@ impl MdnsSource {
                 result = v4.recv_from(&mut buf_v4) => {
                     match result {
                         Ok((len, from)) => {
-                            dirty |= self.absorb(&buf_v4[..len], from.ip());
+                            dirty |= self.absorb(config, &buf_v4[..len], from.ip());
                         }
                         Err(e) => warn!("mdns: IPv4 receive failed: {e}"),
                     }
@@ -157,7 +323,7 @@ impl MdnsSource {
                 result = recv_optional(v6.as_ref(), &mut buf_v6) => {
                     match result {
                         Ok((len, from)) => {
-                            dirty |= self.absorb(&buf_v6[..len], from.ip());
+                            dirty |= self.absorb(config, &buf_v6[..len], from.ip());
                         }
                         Err(e) => warn!("mdns: IPv6 receive failed: {e}"),
                     }
@@ -171,44 +337,50 @@ impl MdnsSource {
                         let prune = started.elapsed() >= STARTUP_GRACE;
                         let desired = {
                             let cache = self.cache.lock().unwrap();
-                            translate::desired(cache.entries().cloned(), &self.config)
+                            translate::desired(cache.entries().cloned(), config)
                         };
                         match publisher.apply(&desired, prune) {
                             Ok(_) => dirty = false,
                             // Keep the dirty flag set so a transient database
                             // error is retried on the next tick.
-                            Err(e) => warn!("mdns: publishing to {} failed: {e}", publisher.zone_name()),
+                            Err(e) => warn!(
+                                "mdns: publishing to {} failed: {e}",
+                                publisher.zone_name()
+                            ),
                         }
                     }
 
                     let due = self.cache.lock().unwrap().take_refresh_due(Utc::now());
-                    if !due.is_empty() && self.config.query_interval_secs > 0 {
+                    if !due.is_empty() && config.query_interval_secs > 0 {
                         let batch: Vec<_> = due.into_iter().take(MAX_REFRESH_PER_TICK).collect();
-                        self.send_queries(&v4, &v6, &batch).await;
+                        self.send_queries(config, &v4, &v6, &batch).await;
                     }
                 }
-                _ = query_tick.tick(), if self.config.query_interval_secs > 0 => {
+                _ = query_tick.tick(), if config.query_interval_secs > 0 => {
                     let mut questions = vec![(SERVICE_ENUMERATION.to_string(), RecordType::PTR)];
                     for service in self.cache.lock().unwrap().service_types() {
                         questions.push((service, RecordType::PTR));
                     }
-                    self.send_queries(&v4, &v6, &questions).await;
+                    self.send_queries(config, &v4, &v6, &questions).await;
+                }
+                _ = config_tick.tick() => {
+                    if self.stored_config().as_ref() != Some(config) {
+                        return Ok(SessionEnd::ConfigChanged);
+                    }
                 }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         info!("mdns: shutdown requested");
-                        break;
+                        return Ok(SessionEnd::Shutdown);
                     }
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Parse one packet into the cache. Returns whether the published set needs
     /// rewriting.
-    fn absorb(&self, packet: &[u8], from: std::net::IpAddr) -> bool {
+    fn absorb(&self, config: &MdnsConfig, packet: &[u8], from: std::net::IpAddr) -> bool {
         let message = match Message::from_bytes(packet) {
             Ok(message) => message,
             // Malformed multicast is normal on a busy LAN — some responders
@@ -232,7 +404,7 @@ impl MdnsSource {
             let ttl = if announcement.ttl == 0 {
                 0
             } else {
-                self.config.clamp_ttl(announcement.ttl)
+                config.clamp_ttl(announcement.ttl)
             };
             let outcome = cache.learn(&announcement.name, announcement.data, ttl, from, now);
             changed |= outcome.changes_zone();
@@ -243,6 +415,7 @@ impl MdnsSource {
     /// Multicast a batch of questions on every listener we have.
     async fn send_queries(
         &self,
+        config: &MdnsConfig,
         v4: &UdpSocket,
         v6: &Option<UdpSocket>,
         questions: &[(String, RecordType)],
@@ -250,7 +423,7 @@ impl MdnsSource {
         let Some(wire) = socket::query(questions) else {
             return;
         };
-        let port = v4.local_addr().map(|a| a.port()).unwrap_or(config::MDNS_PORT);
+        let port = v4.local_addr().map(|a| a.port()).unwrap_or(config.port);
 
         if let Err(e) = v4.send_to(&wire, socket::group_v4(port)).await {
             debug!("mdns: IPv4 query send failed: {e}");
@@ -293,6 +466,31 @@ mod tests {
         (db, dir)
     }
 
+    fn stored(zone: &str, enabled: bool) -> MdnsSourceConfig {
+        MdnsSourceConfig {
+            enabled,
+            zone: zone.into(),
+            ttl_min: 60,
+            ttl_max: 1200,
+            services: true,
+            allow: vec![],
+            deny: vec![],
+            query_interval_secs: 300,
+            ipv6: false,
+            bind: "0.0.0.0".into(),
+            interfaces: vec![],
+            debounce_secs: 5,
+        }
+    }
+
+    fn config(zone: &str) -> MdnsConfig {
+        MdnsConfig {
+            enabled: true,
+            zone: zone.into(),
+            ..Default::default()
+        }
+    }
+
     fn announcement_packet(name: &str, ip: [u8; 4], ttl: u32) -> Vec<u8> {
         let mut header = Header::new();
         header.set_message_type(MessageType::Response);
@@ -314,14 +512,11 @@ mod tests {
     #[test]
     fn an_announcement_lands_in_the_cache_and_then_in_the_zone() {
         let (db, _dir) = test_db();
-        let config = MdnsConfig {
-            zone: "mdns.g9.lo".into(),
-            ..Default::default()
-        };
-        let source = MdnsSource::new(db.clone(), config.clone());
+        let config = config("mdns.g9.lo");
+        let source = MdnsSource::new(db.clone());
 
         let packet = announcement_packet("teslatracker-52c4.local.", [192, 168, 9, 134], 120);
-        assert!(source.absorb(&packet, "192.168.9.134".parse().unwrap()));
+        assert!(source.absorb(&config, &packet, "192.168.9.134".parse().unwrap()));
 
         let desired = {
             let cache = source.cache.lock().unwrap();
@@ -347,33 +542,26 @@ mod tests {
     #[test]
     fn a_goodbye_withdraws_the_name_again() {
         let (db, _dir) = test_db();
-        let config = MdnsConfig {
-            zone: "mdns.g9.lo".into(),
-            ..Default::default()
-        };
-        let source = MdnsSource::new(db.clone(), config.clone());
+        let config = config("mdns.g9.lo");
+        let source = MdnsSource::new(db.clone());
         let mut publisher = publish::Publisher::new(db.clone(), &config).unwrap();
 
         let from = "192.168.9.134".parse().unwrap();
         source.absorb(
+            &config,
             &announcement_packet("teslatracker-52c4.local.", [192, 168, 9, 134], 120),
             from,
         );
-        let desired = translate::desired(
-            source.cache.lock().unwrap().entries().cloned(),
-            &config,
-        );
+        let desired = translate::desired(source.cache.lock().unwrap().entries().cloned(), &config);
         publisher.apply(&desired, true).unwrap();
 
         // TTL 0 is the device saying goodbye as it leaves.
         assert!(source.absorb(
+            &config,
             &announcement_packet("teslatracker-52c4.local.", [192, 168, 9, 134], 0),
             from
         ));
-        let desired = translate::desired(
-            source.cache.lock().unwrap().entries().cloned(),
-            &config,
-        );
+        let desired = translate::desired(source.cache.lock().unwrap().entries().cloned(), &config);
         assert!(desired.is_empty());
         publisher.apply(&desired, true).unwrap();
 
@@ -386,28 +574,95 @@ mod tests {
     #[test]
     fn a_garbled_packet_is_ignored_rather_than_fatal() {
         let (db, _dir) = test_db();
-        let source = MdnsSource::new(db, MdnsConfig::default());
-        assert!(!source.absorb(b"not a dns packet", "192.168.9.1".parse().unwrap()));
+        let source = MdnsSource::new(db);
+        assert!(!source.absorb(
+            &MdnsConfig::default(),
+            b"not a dns packet",
+            "192.168.9.1".parse().unwrap()
+        ));
         assert!(source.cache.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn the_source_stops_when_shutdown_is_signalled() {
+    #[test]
+    fn bootstrap_seeds_the_database_once_and_then_defers_to_it() {
         let (db, _dir) = test_db();
-        let config = MdnsConfig {
-            zone: "mdns.test.lo".into(),
-            // Port 0 keeps the test off the real mDNS port.
-            port: 0,
-            ..Default::default()
-        };
+
+        assert!(MdnsSource::bootstrap(&db, &stored("mdns.g9.lo", true)).unwrap());
+        // An operator changes it through the API...
+        db.set_runtime_section(CONFIG_SECTION, &stored("discovered.g9.lo", true))
+            .unwrap();
+        // ...and a restart carrying the old TOML must not undo that.
+        assert!(!MdnsSource::bootstrap(&db, &stored("mdns.g9.lo", true)).unwrap());
+
+        let source = MdnsSource::new(db);
+        assert_eq!(source.stored_config().unwrap().zone, "discovered.g9.lo");
+    }
+
+    #[test]
+    fn no_stored_config_means_no_source() {
+        let (db, _dir) = test_db();
+        assert!(MdnsSource::new(db).stored_config().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_disabled_source_idles_and_still_shuts_down_promptly() {
+        let (db, _dir) = test_db();
+        db.set_runtime_section(CONFIG_SECTION, &stored("mdns.test.lo", false))
+            .unwrap();
+
         let (tx, rx) = watch::channel(false);
-        let source = MdnsSource::new(db, config);
+        let source = MdnsSource::new(db);
+        let handle = source.handle();
         let task = tokio::spawn(source.run(rx));
 
+        // Disabled: nothing is listening, and the API sees no zone.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(handle.zone().is_none());
+
         tx.send(true).unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(5), task)
+        tokio::time::timeout(Duration::from_secs(15), task)
             .await
-            .expect("source should stop promptly");
-        result.unwrap().unwrap();
+            .expect("a disabled source should still stop promptly")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn turning_the_source_off_withdraws_only_what_it_published() {
+        let (db, _dir) = test_db();
+        let config = config("mdns.test.lo");
+
+        // One discovered record, and one curated record that must survive.
+        let mut publisher = publish::Publisher::new(db.clone(), &config).unwrap();
+        publisher
+            .apply(
+                &[DesiredRecord {
+                    name: "tracker".into(),
+                    ttl: 120,
+                    data: RecordData::A("192.168.9.134".parse().unwrap()),
+                }],
+                true,
+            )
+            .unwrap();
+        let zone = db.get_zone_by_name("mdns.test.lo").unwrap().unwrap();
+        db.create_record(&microdns_core::types::Record {
+            id: uuid::Uuid::new_v4(),
+            zone_id: zone.id,
+            name: "curated".into(),
+            ttl: 300,
+            data: RecordData::A("10.0.0.1".parse().unwrap()),
+            enabled: true,
+            health_check: None,
+            source: RecordSource::Manual,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .unwrap();
+
+        MdnsSource::new(db.clone()).withdraw(&config);
+
+        let records = db.list_records(&zone.id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "curated");
     }
 }

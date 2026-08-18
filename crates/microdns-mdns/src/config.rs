@@ -13,8 +13,11 @@ pub const MDNS_GROUP_V6: std::net::Ipv6Addr =
 /// mDNS is defined on port 5353 and nowhere else; the knob exists for tests.
 pub const MDNS_PORT: u16 = 5353;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MdnsConfig {
+    /// Whether the source should be listening at all. Config lives in the
+    /// database, so this flips at runtime rather than only at startup.
+    pub enabled: bool,
     /// Zone discovered names are published into, e.g. `mdns.g9.lo`. A dedicated
     /// subzone keeps discovered names visibly separate from curated ones.
     pub zone: String,
@@ -51,6 +54,7 @@ pub struct MdnsConfig {
 impl Default for MdnsConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             zone: "mdns.local".to_string(),
             ttl_min: 60,
             ttl_max: 1200,
@@ -63,6 +67,45 @@ impl Default for MdnsConfig {
             port: MDNS_PORT,
             interfaces: Vec::new(),
             debounce_secs: 5,
+        }
+    }
+}
+
+impl From<&microdns_core::config::MdnsSourceConfig> for MdnsConfig {
+    /// Map the stored/bootstrap shape onto the runtime one. Addresses that do
+    /// not parse fall back to the default rather than failing the source: a
+    /// typo in one interface must not silence discovery altogether.
+    fn from(c: &microdns_core::config::MdnsSourceConfig) -> Self {
+        let bind = c.bind.parse().unwrap_or_else(|_| {
+            tracing::warn!("mdns: bind '{}' is not an IPv4 address; using 0.0.0.0", c.bind);
+            Ipv4Addr::UNSPECIFIED
+        });
+        let interfaces = c
+            .interfaces
+            .iter()
+            .filter_map(|s| match s.parse() {
+                Ok(ip) => Some(ip),
+                Err(_) => {
+                    tracing::warn!("mdns: ignoring invalid interface address '{s}'");
+                    None
+                }
+            })
+            .collect();
+
+        Self {
+            enabled: c.enabled,
+            zone: c.zone.clone(),
+            ttl_min: c.ttl_min,
+            ttl_max: c.ttl_max,
+            services: c.services,
+            allow: c.allow.clone(),
+            deny: c.deny.clone(),
+            query_interval_secs: c.query_interval_secs,
+            ipv6: c.ipv6,
+            bind,
+            port: MDNS_PORT,
+            interfaces,
+            debounce_secs: c.debounce_secs,
         }
     }
 }

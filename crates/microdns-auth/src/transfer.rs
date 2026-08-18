@@ -26,6 +26,9 @@ pub struct ZoneTransfer {
 pub struct TransferResult {
     pub zone_name: String,
     pub records_imported: usize,
+    /// SOA serial of the copy that was transferred. A secondary stores this to
+    /// decide whether the next check needs a transfer at all.
+    pub serial: u32,
 }
 
 impl ZoneTransfer {
@@ -208,46 +211,28 @@ impl ZoneTransfer {
             soa.serial
         );
 
-        // Create or update zone
-        let zone = match self.db.get_zone_by_name(zone_name)? {
-            Some(mut existing) => {
-                existing.soa = soa;
-                existing.default_ttl = default_ttl;
-                existing.updated_at = Utc::now();
-                // Update zone in db via delete + recreate (redb has no update_zone)
-                let zone_id = existing.id;
-                self.db.delete_zone_records(&zone_id)?;
-                // Update zone SOA by delete/recreate
-                self.db.delete_zone(&zone_id)?;
-                let zone = Zone {
-                    id: zone_id,
-                    name: zone_name.to_string(),
-                    soa: existing.soa,
-                    default_ttl: existing.default_ttl,
-                    created_at: existing.created_at,
-                    updated_at: existing.updated_at,
-                };
-                self.db.create_zone(zone_name, &zone)?;
-                zone
-            }
-            None => {
-                let zone = Zone {
-                    id: Uuid::new_v4(),
-                    name: zone_name.to_string(),
-                    soa,
-                    default_ttl,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
-                };
-                self.db.create_zone(zone_name, &zone)?;
-                zone
-            }
+        // Upsert the zone and swap its contents in one go. Deleting the zone
+        // first and rebuilding it would leave a window in which this server
+        // answers "no such zone" for a zone it holds a perfectly good copy of —
+        // and on a secondary, that window lands exactly when the primary is
+        // being changed.
+        let serial = soa.serial;
+        let existing = self.db.get_zone_by_name(zone_name)?;
+        let zone = Zone {
+            id: existing.as_ref().map_or_else(Uuid::new_v4, |z| z.id),
+            name: zone_name.to_string(),
+            soa,
+            default_ttl,
+            created_at: existing.as_ref().map_or_else(Utc::now, |z| z.created_at),
+            updated_at: Utc::now(),
         };
+        self.db.upsert_zone(&zone)?;
 
-        // Import records
+        let now = Utc::now();
         let count = parsed_records.len();
-        for (name, data, ttl) in parsed_records {
-            let record = Record {
+        let records: Vec<Record> = parsed_records
+            .into_iter()
+            .map(|(name, data, ttl)| Record {
                 id: Uuid::new_v4(),
                 zone_id: zone.id,
                 name,
@@ -256,16 +241,17 @@ impl ZoneTransfer {
                 enabled: true,
                 health_check: None,
                 source: RecordSource::Manual,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-            };
-            self.db.create_record(&record)?;
-        }
+                created_at: now,
+                updated_at: now,
+            })
+            .collect();
+        self.db.replace_zone_records(&zone.id, &records)?;
 
         info!("AXFR {zone_name}: imported {count} records");
         Ok(TransferResult {
             zone_name: zone_name.to_string(),
             records_imported: count,
+            serial,
         })
     }
 }

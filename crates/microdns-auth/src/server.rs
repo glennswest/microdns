@@ -1,5 +1,6 @@
 use crate::catalog::ZoneCatalog;
 use crate::transfer::ZoneTransfer;
+use crate::secondary::NotifyAcceptor;
 use crate::zone;
 use hickory_proto::op::{MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::{LowerName, RecordType};
@@ -32,6 +33,9 @@ pub struct AuthServer {
     tracker: Option<Arc<QueryTracker>>,
     /// CIDRs permitted to request a zone transfer. Empty denies everything.
     allow_transfer: Arc<Vec<IpNet>>,
+    /// Accepts inbound NOTIFY for zones this instance mirrors. Absent when the
+    /// instance is not a secondary for anything.
+    notify: Option<NotifyAcceptor>,
 }
 
 impl AuthServer {
@@ -42,6 +46,7 @@ impl AuthServer {
             db,
             tracker: None,
             allow_transfer: Arc::new(Vec::new()),
+            notify: None,
         }
     }
 
@@ -73,6 +78,13 @@ impl AuthServer {
         self
     }
 
+    /// Accept inbound NOTIFY for the zones this instance mirrors, handing each
+    /// accepted one to the secondary agent.
+    pub fn with_notify_acceptor(mut self, acceptor: NotifyAcceptor) -> Self {
+        self.notify = Some(acceptor);
+        self
+    }
+
     pub async fn run(self, shutdown: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<()> {
         let socket = UdpSocket::bind(self.listen_addr).await?;
         let tcp_listener = TcpListener::bind(self.listen_addr).await?;
@@ -89,6 +101,7 @@ impl AuthServer {
         let db_tcp = self.db.clone();
         let tracker_tcp = self.tracker.clone();
         let allow_tcp = self.allow_transfer.clone();
+        let notify_tcp = self.notify.clone();
 
         // TCP accept loop with connection limit
         let tcp_semaphore = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
@@ -110,11 +123,18 @@ impl AuthServer {
                                 let db = db_tcp.clone();
                                 let tracker = tracker_tcp.clone();
                                 let allow = allow_tcp.clone();
+                                let notify = notify_tcp.clone();
                                 tokio::spawn(async move {
                                     let result = tokio::time::timeout(
                                         TCP_TIMEOUT,
                                         handle_tcp_connection(
-                                            stream, &catalog, &db, tracker.as_deref(), src, &allow,
+                                            stream,
+                                            &catalog,
+                                            &db,
+                                            tracker.as_deref(),
+                                            src,
+                                            &allow,
+                                            notify.as_ref(),
                                         ),
                                     ).await;
                                     match result {
@@ -148,7 +168,13 @@ impl AuthServer {
                     let catalog = self.catalog.clone();
                     let socket_ref = &socket;
 
-                    let response = Self::handle_query(&catalog, &data, self.tracker.as_deref());
+                    let response = Self::handle_query(
+                        &catalog,
+                        &data,
+                        self.tracker.as_deref(),
+                        src,
+                        self.notify.as_ref(),
+                    );
                     match response {
                         Ok(resp) => {
                             if let Err(e) = socket_ref.send_to(&resp, src).await {
@@ -173,14 +199,62 @@ impl AuthServer {
         Ok(())
     }
 
+    /// Answer an inbound NOTIFY (RFC 1996 §3).
+    ///
+    /// The reply is an acknowledgement that the message was received, not that
+    /// a transfer happened — the sender is not made to wait for one. Anything
+    /// this instance does not mirror, or that comes from an address other than
+    /// that zone's configured primary, is refused.
+    fn handle_notify(
+        request: &hickory_proto::op::Message,
+        peer: SocketAddr,
+        notify: Option<&NotifyAcceptor>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let mut response = hickory_proto::op::Message::new();
+        response.set_id(request.id());
+        response.set_message_type(MessageType::Response);
+        response.set_op_code(OpCode::Notify);
+        response.set_authoritative(true);
+        for query in request.queries() {
+            response.add_query(query.clone());
+        }
+
+        let Some(zone) = request.queries().first().map(|q| q.name().to_string()) else {
+            response.set_response_code(ResponseCode::FormErr);
+            return Ok(response.to_bytes()?);
+        };
+
+        match notify {
+            Some(acceptor) if acceptor.accept(peer.ip(), &zone) => {
+                info!("NOTIFY accepted for {zone} from {peer}");
+                response.set_response_code(ResponseCode::NoError);
+            }
+            Some(_) => {
+                warn!("NOTIFY for {zone} refused: {peer} is not the configured primary");
+                response.set_response_code(ResponseCode::Refused);
+            }
+            None => {
+                debug!("NOTIFY for {zone} from {peer} ignored: not a secondary for any zone");
+                response.set_response_code(ResponseCode::Refused);
+            }
+        }
+        Ok(response.to_bytes()?)
+    }
+
     fn handle_query(
         catalog: &ZoneCatalog,
         data: &[u8],
         tracker: Option<&QueryTracker>,
+        peer: SocketAddr,
+        notify: Option<&NotifyAcceptor>,
     ) -> anyhow::Result<Vec<u8>> {
         use hickory_proto::op::Message;
 
         let request = Message::from_bytes(data)?;
+
+        if request.op_code() == OpCode::Notify {
+            return Self::handle_notify(&request, peer, notify);
+        }
 
         let mut response = Message::new();
         response.set_id(request.id());
@@ -294,6 +368,7 @@ async fn handle_tcp_connection(
     tracker: Option<&QueryTracker>,
     peer: SocketAddr,
     allow_transfer: &[IpNet],
+    notify: Option<&NotifyAcceptor>,
 ) -> anyhow::Result<()> {
     // Read 2-byte length prefix
     let msg_len = stream.read_u16().await? as usize;
@@ -305,6 +380,16 @@ async fn handle_tcp_connection(
     stream.read_exact(&mut buf).await?;
 
     let request = hickory_proto::op::Message::from_bytes(&buf)?;
+
+    // A NOTIFY may arrive over TCP as readily as UDP.
+    if request.op_code() == OpCode::Notify {
+        let wire = AuthServer::handle_notify(&request, peer, notify)?;
+        stream.write_all(&(wire.len() as u16).to_be_bytes()).await?;
+        stream.write_all(&wire).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
+
     let queries = request.queries();
     if queries.is_empty() {
         return Ok(());
@@ -389,7 +474,7 @@ async fn handle_tcp_connection(
         }
     } else {
         // Regular TCP query — reuse UDP handler
-        let response = AuthServer::handle_query(catalog, &buf, tracker)?;
+        let response = AuthServer::handle_query(catalog, &buf, tracker, peer, notify)?;
         let len = response.len() as u16;
         stream.write_all(&len.to_be_bytes()).await?;
         stream.write_all(&response).await?;

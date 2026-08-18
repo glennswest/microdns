@@ -5,11 +5,14 @@
 //! has actually heard on the wire, including names that config filtered out,
 //! which is what you need when a device is announcing but not resolving.
 
+use crate::security::internal_error;
 use crate::AppState;
 use axum::extract::State;
-use axum::routing::get;
+use axum::http::StatusCode;
+use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use microdns_core::config::MdnsSourceConfig;
 use microdns_core::types::RecordData;
 use serde::Serialize;
 
@@ -17,6 +20,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/mdns/status", get(mdns_status))
         .route("/mdns/discovered", get(mdns_discovered))
+        .route("/mdns/config", get(get_config))
+        .route("/mdns/config", put(put_config))
+        .route("/mdns/config", delete(delete_config))
 }
 
 #[derive(Serialize)]
@@ -80,11 +86,13 @@ async fn mdns_status(State(state): State<AppState>) -> Json<StatusResponse> {
         });
     };
 
+    let config = handle.config();
+    let zone = handle.zone();
     let cache = handle.cache.lock().unwrap();
-    let published = microdns_mdns::translate::desired(cache.entries().cloned(), &handle.config).len();
+    let published = microdns_mdns::translate::desired(cache.entries().cloned(), &config).len();
     Json(StatusResponse {
-        enabled: true,
-        zone: Some(handle.zone.clone()),
+        enabled: zone.is_some(),
+        zone,
         cached: cache.len(),
         published,
         service_types: cache.service_types(),
@@ -107,12 +115,16 @@ async fn mdns_discovered(State(state): State<AppState>) -> Json<DiscoveredRespon
     };
 
     let now = Utc::now();
+    let config = handle.config();
+    let zone = handle.zone();
     let cache = handle.cache.lock().unwrap();
     let mut entries: Vec<DiscoveredEntry> = cache
         .entries()
         .map(|entry| {
-            let published_as = microdns_mdns::translate::translate(entry, &handle.config)
-                .map(|record| format!("{}.{}", record.name, handle.zone));
+            let published_as = zone.as_ref().and_then(|zone| {
+                microdns_mdns::translate::translate(entry, &config)
+                    .map(|record| format!("{}.{}", record.name, zone))
+            });
             DiscoveredEntry {
                 name: entry.name.clone(),
                 record_type: entry.record_type().to_string(),
@@ -130,8 +142,76 @@ async fn mdns_discovered(State(state): State<AppState>) -> Json<DiscoveredRespon
     entries.sort_by(|a, b| (&a.name, &a.record_type).cmp(&(&b.name, &b.record_type)));
 
     Json(DiscoveredResponse {
-        zone: Some(handle.zone.clone()),
+        zone,
         count: entries.len(),
         entries,
     })
+}
+
+/// The stored configuration, or 404 when the source has never been configured.
+///
+/// This is deliberately the *stored* config rather than the running one: it is
+/// what an operator edits, and it is what survives a TOML regeneration on
+/// deployments where the config file is generated for them.
+async fn get_config(
+    State(state): State<AppState>,
+) -> Result<Json<MdnsSourceConfig>, (StatusCode, String)> {
+    match state
+        .db
+        .get_runtime_section::<MdnsSourceConfig>(microdns_mdns::CONFIG_SECTION)
+        .map_err(internal_error)?
+    {
+        Some(config) => Ok(Json(config)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            "mDNS ingest has not been configured on this instance".to_string(),
+        )),
+    }
+}
+
+/// Store the configuration. The running source picks it up within seconds —
+/// starting, stopping or re-homing its zone without a restart.
+async fn put_config(
+    State(state): State<AppState>,
+    Json(config): Json<MdnsSourceConfig>,
+) -> Result<Json<MdnsSourceConfig>, (StatusCode, String)> {
+    let zone = config.zone.trim().trim_end_matches('.').to_string();
+    if config.enabled && zone.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "zone is required when mDNS ingest is enabled".to_string(),
+        ));
+    }
+    if microdns_core::reverse::is_reverse_zone(&zone) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{zone} is a reverse zone; discovered names cannot be published into it"),
+        ));
+    }
+    if config.ttl_min > config.ttl_max {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "ttl_min ({}) is above ttl_max ({})",
+                config.ttl_min, config.ttl_max
+            ),
+        ));
+    }
+
+    let stored = MdnsSourceConfig { zone, ..config };
+    state
+        .db
+        .set_runtime_section(microdns_mdns::CONFIG_SECTION, &stored)
+        .map_err(internal_error)?;
+    Ok(Json(stored))
+}
+
+/// Forget the configuration entirely, which also stops the source and
+/// withdraws the names it published.
+async fn delete_config(State(state): State<AppState>) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .db
+        .delete_runtime_section(microdns_mdns::CONFIG_SECTION)
+        .map_err(internal_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }

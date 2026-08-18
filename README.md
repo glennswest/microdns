@@ -81,6 +81,7 @@ All instances are managed by **mkube** which auto-deploys from the container reg
 - **Authoritative DNS** — A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA records
 - **Recursive DNS** — Cache, forward zones, upstream forwarding (UDP + TCP)
 - **Forward-with-Fallback** — Forward to peer instances; serve local copy if peer is down (AA=0)
+- **Zone Transfer (AXFR) + NOTIFY** — CIDR-gated outbound transfers, and secondary zones mirrored from a primary within seconds of a change instead of a refresh interval ([docs](docs/zone-transfer.md))
 - **DNS Load Balancing** — Health-checked records with ping/HTTP/HTTPS/TCP probes
 - **Correct NOERROR/NXDOMAIN** — Returns NOERROR with empty answer when name exists but queried type has no records (required for systemd-resolved parallel A+AAAA lookups)
 - **DHCPv4** — DORA flow, pools, static reservations, PXE/iPXE boot support
@@ -228,6 +229,18 @@ report_interval_secs = 30
 enabled = true
 listen = "0.0.0.0:53"
 zones = ["example.com", "1.168.192.in-addr.arpa"]
+# Who may pull a full copy of a zone (AXFR hands over a map of every
+# internal host). Default: RFC1918 + loopback.
+allow_transfer = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"]
+# Secondaries to announce zone changes to, as `ip` or `ip:port`.
+notify = ["192.168.1.51"]
+
+# Zones mirrored from a primary (the other side of `notify`).
+# See docs/zone-transfer.md.
+[[dns.auth.secondary]]
+zone = "gw.lo"
+primary = "192.168.1.252"
+refresh_secs = 900        # fallback poll when a NOTIFY goes missing
 
 [dns.recursor]
 enabled = true

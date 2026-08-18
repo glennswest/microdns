@@ -191,6 +191,14 @@ impl MdnsCache {
         due
     }
 
+    /// Forget everything. Used when the source stops listening: a cache held
+    /// across a stop would claim devices are present that nobody has heard
+    /// from since.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.last_packet_at = None;
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &Entry> {
         self.entries.values().flatten()
     }

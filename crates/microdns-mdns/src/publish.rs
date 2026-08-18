@@ -171,6 +171,24 @@ impl Publisher {
         }
         Ok(applied)
     }
+
+    /// Remove every record this source published, leaving the zone's curated
+    /// records untouched. Used when the source is turned off or re-homed to a
+    /// different zone: a discovered name must not outlive the source that
+    /// vouched for it.
+    pub fn withdraw_all(&self) -> anyhow::Result<usize> {
+        let mut removed = 0;
+        for record in self.db.list_records(&self.zone_id)? {
+            if record.source == RecordSource::Mdns {
+                self.db.delete_record(&record.id)?;
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            self.db.increment_soa_serial(&self.zone_id)?;
+        }
+        Ok(removed)
+    }
 }
 
 /// Create the publish zone with a sane SOA if it does not already exist.

@@ -185,6 +185,24 @@ pub struct DnsAuthConfig {
     /// incident would take that long to reach the fallback.
     #[serde(default)]
     pub notify: Vec<String>,
+    /// Zones this instance mirrors from a primary over AXFR — the other side of
+    /// `notify`. Each entry names the zone and the primary to pull it from.
+    #[serde(default)]
+    pub secondary: Vec<SecondaryZoneConfig>,
+}
+
+/// One zone mirrored from a primary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecondaryZoneConfig {
+    /// Zone to mirror, e.g. `gw.lo`.
+    pub zone: String,
+    /// Primary to transfer from, as `ip` or `ip:port` (port defaults to 53).
+    /// Only this address is believed when a NOTIFY for the zone arrives.
+    pub primary: String,
+    /// Fallback poll interval. NOTIFY is a hint, not a delivery guarantee
+    /// (RFC 1996 §4), so the timer is what catches a lost one.
+    #[serde(default = "default_secondary_refresh")]
+    pub refresh_secs: u64,
 }
 
 fn default_allow_transfer() -> Vec<String> {
@@ -573,6 +591,9 @@ fn default_peer_timeout() -> u64 {
 }
 fn default_topic_prefix() -> String {
     "microdns".to_string()
+}
+fn default_secondary_refresh() -> u64 {
+    900
 }
 fn default_mdns_ttl_min() -> u32 {
     60

@@ -49,14 +49,37 @@ const INSTANCE_CONFIG_TABLE: TableDefinition<&str, &str> =
 const LB_RECORD_HEALTH_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("lb_record_health");
 
+/// Runtime configuration for sources that are managed through the API rather
+/// than the bootstrap TOML: section name -> JSON.
+///
+/// Some deployments have their TOML generated for them (mkube renders one per
+/// network from a Network CRD), so a section added by hand there is lost the
+/// next time it is regenerated. Anything an operator needs to turn on at
+/// runtime therefore lives here, in the database, where it survives.
+const RUNTIME_CONFIG_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("runtime_config");
+
 /// Per-(fqdn,type) query stats: "{fqdn_lc}:{TYPE}" -> QueryStat (JSON).
 /// Written by a periodic flush from the in-memory `QueryTracker`.
 const QUERY_STATS_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("query_stats");
 
+/// Called with a zone name whenever that zone's contents change.
+///
+/// Every writer — the REST API, DHCP registration, the Kubernetes and mDNS
+/// sources, reverse-PTR sync — ends a change by bumping the zone's SOA serial,
+/// so that one call is the choke point where "this zone is now different" is
+/// known. The hook exists so a change can be announced (DNS NOTIFY) without
+/// the database itself knowing anything about the network.
+///
+/// It runs inline on the writing thread, so an implementation must not block:
+/// hand the name to a channel and return.
+pub type ZoneChangeHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Database>,
+    on_zone_change: Option<ZoneChangeHook>,
 }
 
 impl Db {
@@ -82,12 +105,21 @@ impl Db {
             let _ = write_txn.open_table(INSTANCE_CONFIG_TABLE)?;
             let _ = write_txn.open_table(LB_RECORD_HEALTH_TABLE)?;
             let _ = write_txn.open_table(QUERY_STATS_TABLE)?;
+            let _ = write_txn.open_table(RUNTIME_CONFIG_TABLE)?;
         }
         write_txn.commit()?;
 
         Ok(Self {
             inner: Arc::new(db),
+            on_zone_change: None,
         })
+    }
+
+    /// Install the zone-change hook. Set once at startup, before the handle is
+    /// cloned into the services, so every writer carries it.
+    pub fn with_zone_change_hook(mut self, hook: ZoneChangeHook) -> Self {
+        self.on_zone_change = Some(hook);
+        self
     }
 
     /// Access the underlying redb Database for custom table operations.
@@ -480,6 +512,7 @@ impl Db {
 
     /// Increment zone SOA serial (called on any record change)
     pub fn increment_soa_serial(&self, zone_id: &Uuid) -> Result<()> {
+        let changed_zone;
         let write_txn = self.inner.begin_write()?;
         {
             let id_str = zone_id.to_string();
@@ -490,6 +523,7 @@ impl Db {
                 .ok_or_else(|| Error::ZoneNotFound(id_str.clone()))?;
             let mut zone: Zone = serde_json::from_str(zone_json.value())?;
             drop(zone_json);
+            changed_zone = zone.name.clone();
 
             // Use YYYYMMDDNN format, incrementing NN
             let today = Utc::now().format("%Y%m%d").to_string();
@@ -506,6 +540,13 @@ impl Db {
             zones.insert(id_str.as_str(), json.as_str())?;
         }
         write_txn.commit()?;
+
+        // Announce only after the commit: a listener that reacts by serving or
+        // transferring the zone must never see a serial that could still be
+        // rolled back.
+        if let Some(hook) = &self.on_zone_change {
+            hook(&changed_zone);
+        }
         Ok(())
     }
 
@@ -977,6 +1018,49 @@ impl Db {
         Ok(())
     }
 
+    // --- Runtime source config (API-managed, survives TOML regeneration) ---
+
+    /// Read a runtime config section, or `None` if it was never set.
+    pub fn get_runtime_section<T: serde::de::DeserializeOwned>(
+        &self,
+        section: &str,
+    ) -> Result<Option<T>> {
+        let read_txn = self.inner.begin_read()?;
+        let table = read_txn.open_table(RUNTIME_CONFIG_TABLE)?;
+        match table.get(section)? {
+            Some(json) => Ok(Some(serde_json::from_str(json.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Write a runtime config section.
+    pub fn set_runtime_section<T: serde::Serialize>(
+        &self,
+        section: &str,
+        value: &T,
+    ) -> Result<()> {
+        let json = serde_json::to_string(value)?;
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(RUNTIME_CONFIG_TABLE)?;
+            table.insert(section, json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Remove a runtime config section, reverting that source to whatever the
+    /// bootstrap config says. Removing something absent is not an error.
+    pub fn delete_runtime_section(&self, section: &str) -> Result<()> {
+        let write_txn = self.inner.begin_write()?;
+        {
+            let mut table = write_txn.open_table(RUNTIME_CONFIG_TABLE)?;
+            table.remove(section)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     // --- Instance Config operations ---
 
     pub fn get_instance_config(&self) -> Result<Option<DbInstanceConfig>> {
@@ -1350,6 +1434,39 @@ mod tests {
     }
 
     #[test]
+    fn zone_change_hook_fires_once_per_serial_bump() {
+        use std::sync::Mutex;
+
+        let dir = TempDir::new().unwrap();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let db = Db::open(&dir.path().join("hook.redb"))
+            .unwrap()
+            .with_zone_change_hook(Arc::new(move |zone: &str| {
+                recorder.lock().unwrap().push(zone.to_string());
+            }));
+
+        let zone = make_zone("gw.lo");
+        db.create_zone("gw.lo", &zone).unwrap();
+        // Creating a zone is not a change to announce — there is no serial bump.
+        assert!(seen.lock().unwrap().is_empty());
+
+        db.increment_soa_serial(&zone.id).unwrap();
+        db.increment_soa_serial(&zone.id).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["gw.lo", "gw.lo"]);
+    }
+
+    #[test]
+    fn a_database_without_a_hook_still_bumps_serials() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::open(&dir.path().join("nohook.redb")).unwrap();
+        let zone = make_zone("gw.lo");
+        db.create_zone("gw.lo", &zone).unwrap();
+        db.increment_soa_serial(&zone.id).unwrap();
+        assert!(db.get_zone(&zone.id).unwrap().unwrap().soa.serial > zone.soa.serial);
+    }
+
+    #[test]
     fn test_increment_soa_serial() {
         let (db, _dir) = test_db();
         let zone = make_zone("example.com");
@@ -1476,6 +1593,46 @@ mod tests {
 
         db.delete_dns_forwarder("corp.local").unwrap();
         assert!(db.get_dns_forwarder("corp.local").unwrap().is_none());
+    }
+
+    #[test]
+    fn runtime_sections_round_trip_and_delete() {
+        use crate::config::MdnsSourceConfig;
+
+        let (db, _dir) = test_db();
+        assert!(db
+            .get_runtime_section::<MdnsSourceConfig>("mdns")
+            .unwrap()
+            .is_none());
+
+        let cfg = MdnsSourceConfig {
+            enabled: true,
+            zone: "mdns.g9.lo".into(),
+            ttl_min: 60,
+            ttl_max: 1200,
+            services: true,
+            allow: vec![],
+            deny: vec!["chromecast-*".into()],
+            query_interval_secs: 300,
+            ipv6: false,
+            bind: "0.0.0.0".into(),
+            interfaces: vec![],
+            debounce_secs: 5,
+        };
+        db.set_runtime_section("mdns", &cfg).unwrap();
+
+        let back: MdnsSourceConfig = db.get_runtime_section("mdns").unwrap().unwrap();
+        assert!(back.enabled);
+        assert_eq!(back.zone, "mdns.g9.lo");
+        assert_eq!(back.deny, vec!["chromecast-*".to_string()]);
+
+        db.delete_runtime_section("mdns").unwrap();
+        assert!(db
+            .get_runtime_section::<MdnsSourceConfig>("mdns")
+            .unwrap()
+            .is_none());
+        // Deleting again is a no-op, not an error.
+        db.delete_runtime_section("mdns").unwrap();
     }
 
     #[test]

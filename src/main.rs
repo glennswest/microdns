@@ -126,8 +126,26 @@ async fn main() -> Result<()> {
         "starting microdns"
     );
 
-    // Open database
-    let db = Db::open(&config.database.path)?;
+    // Open database. When secondaries are configured, every zone change is
+    // announced to them: `increment_soa_serial` is the one call every writer
+    // makes, so a hook there catches API edits, DHCP registration, mDNS and
+    // Kubernetes alike without any of them knowing NOTIFY exists.
+    let notify_targets: Vec<String> = config
+        .dns
+        .auth
+        .as_ref()
+        .map(|a| a.notify.clone())
+        .unwrap_or_default();
+    let (zone_change_tx, zone_change_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut db = Db::open(&config.database.path)?;
+    if !notify_targets.is_empty() {
+        let tx = zone_change_tx.clone();
+        db = db.with_zone_change_hook(std::sync::Arc::new(move |zone: &str| {
+            // Runs on the writing thread: hand it off and get out of the way.
+            let _ = tx.send(zone.to_string());
+        }));
+    }
+    let db = db;
     info!(path = %config.database.path.display(), "database opened");
 
     // TOML → database migration: if config file was provided and DB tables are empty,
@@ -294,19 +312,86 @@ async fn main() -> Result<()> {
         }));
     }
 
+    // Zone mirroring, both directions.
+    //
+    // Outbound: tell every configured secondary that a zone changed, so its
+    // copy is seconds behind instead of a refresh interval behind.
+    // Inbound: mirror the zones this instance is a secondary for, driven by
+    // those NOTIFYs and by each zone's own timer.
+    let mut notify_acceptor = None;
+    if let Some(ref auth_config) = config.dns.auth {
+        if !notify_targets.is_empty() {
+            let notifier = microdns_auth::notify::Notifier::new(&notify_targets);
+            if notifier.is_empty() {
+                warn!("notify is configured but no target parsed; zone changes will not be announced");
+            } else {
+                info!(
+                    "announcing zone changes to {} secondary(ies)",
+                    notifier.targets().len()
+                );
+                let rx = shutdown_rx.clone();
+                tasks.push(tokio::spawn(async move {
+                    notify_agent(notifier, zone_change_rx, rx).await;
+                }));
+            }
+        }
+
+        let secondary_zones: Vec<microdns_auth::secondary::SecondaryZone> = auth_config
+            .secondary
+            .iter()
+            .filter_map(|s| {
+                match microdns_auth::secondary::SecondaryZone::parse(
+                    &s.zone,
+                    &s.primary,
+                    s.refresh_secs,
+                ) {
+                    Some(zone) => Some(zone),
+                    None => {
+                        warn!(
+                            "ignoring secondary zone '{}': primary '{}' is not an address",
+                            s.zone, s.primary
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        if !secondary_zones.is_empty() {
+            let (agent, acceptor) =
+                microdns_auth::secondary::SecondaryAgent::new(db.clone(), secondary_zones);
+            notify_acceptor = Some(acceptor);
+            let rx = shutdown_rx.clone();
+            tasks.push(tokio::spawn(async move {
+                if let Err(e) = agent.run(rx).await {
+                    error!("secondary zone agent error: {e}");
+                }
+            }));
+        }
+    }
+
     // Start auth DNS server
     if let Some(ref auth_config) = config.dns.auth {
         if auth_config.enabled {
             let addr: SocketAddr = auth_config.listen.parse()?;
-            let server = AuthServer::new(addr, db.clone())
+            let mut server = AuthServer::new(addr, db.clone())
                 .with_query_tracker(query_tracker.clone())
                 .with_allow_transfer(&auth_config.allow_transfer);
+            if let Some(acceptor) = notify_acceptor.take() {
+                server = server.with_notify_acceptor(acceptor);
+            }
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = server.run(rx).await {
                     error!("auth DNS server error: {e}");
                 }
             }));
+        } else if notify_acceptor.is_some() {
+            // Without the DNS listener there is nothing to receive a NOTIFY on,
+            // so the mirror would only ever refresh on its timer.
+            warn!(
+                "secondary zones are configured but [dns.auth] is disabled;                  NOTIFY cannot be received and mirroring falls back to the refresh timer"
+            );
         }
     }
 
@@ -359,70 +444,53 @@ async fn main() -> Result<()> {
     // instance's segment and republishes them as authoritative records, so
     // clients on other subnets can resolve names that multicast (IP TTL 1)
     // can never reach them.
-    let mut mdns_handle: Option<microdns_mdns::MdnsHandle> = None;
-    if let Some(ref mdns_config) = config.mdns {
-        if mdns_config.enabled {
-            let bind: std::net::Ipv4Addr = mdns_config.bind.parse().map_err(|e| {
-                anyhow::anyhow!("invalid [mdns] bind address '{}': {e}", mdns_config.bind)
-            })?;
-            let interfaces: Vec<std::net::Ipv4Addr> = mdns_config
-                .interfaces
-                .iter()
-                .filter_map(|s| match s.parse() {
-                    Ok(ip) => Some(ip),
-                    Err(_) => {
-                        warn!("mdns: ignoring invalid interface address '{s}'");
-                        None
-                    }
-                })
-                .collect();
-
-            // mDNS owns port 5353. A recursor told to listen there too would
-            // take a share of the queries, so say so rather than leaving a
-            // half-working resolver to be discovered later.
-            if let Some(ref recursor) = config.dns.recursor {
-                if recursor.enabled
-                    && recursor
-                        .listen
-                        .rsplit(':')
-                        .next()
-                        .and_then(|p| p.parse::<u16>().ok())
-                        == Some(microdns_mdns::config::MDNS_PORT)
-                {
-                    warn!(
-                        "mdns and the recursor are both on port {} ({}); \
-                         move the recursor to :53 or disable one of them",
-                        microdns_mdns::config::MDNS_PORT,
-                        recursor.listen
-                    );
-                }
+    //
+    // The task always runs: its configuration lives in the database, so an
+    // operator can turn discovery on through the API on any instance, and the
+    // source follows that without a restart. A `[mdns]` block in the config
+    // file only seeds the stored value the first time, the way pools and
+    // forwarders do.
+    let mdns_handle: Option<microdns_mdns::MdnsHandle>;
+    {
+        if let Some(ref mdns_config) = config.mdns {
+            match microdns_mdns::MdnsSource::bootstrap(&db, mdns_config) {
+                Ok(true) => info!("mdns: seeded stored config from [mdns] in the config file"),
+                Ok(false) => {}
+                Err(e) => warn!("mdns: could not seed stored config: {e}"),
             }
-
-            let mc = microdns_mdns::MdnsConfig {
-                zone: mdns_config.zone.clone(),
-                ttl_min: mdns_config.ttl_min,
-                ttl_max: mdns_config.ttl_max,
-                services: mdns_config.services,
-                allow: mdns_config.allow.clone(),
-                deny: mdns_config.deny.clone(),
-                query_interval_secs: mdns_config.query_interval_secs,
-                ipv6: mdns_config.ipv6,
-                bind,
-                port: microdns_mdns::config::MDNS_PORT,
-                interfaces,
-                debounce_secs: mdns_config.debounce_secs,
-            };
-            let source = microdns_mdns::MdnsSource::new(db.clone(), mc);
-            mdns_handle = Some(source.handle());
-            let rx = shutdown_rx.clone();
-            tasks.push(tokio::spawn(async move {
-                // A failure here (no multicast on the interface, port in use)
-                // must not take DNS down with it.
-                if let Err(e) = source.run(rx).await {
-                    error!("mDNS source error: {e}");
-                }
-            }));
         }
+
+        // mDNS owns port 5353. A recursor told to listen there too would take a
+        // share of the queries, so say so rather than leaving a half-working
+        // resolver to be discovered later.
+        if let Some(ref recursor) = config.dns.recursor {
+            let clash = recursor.enabled
+                && recursor
+                    .listen
+                    .rsplit(':')
+                    .next()
+                    .and_then(|p| p.parse::<u16>().ok())
+                    == Some(microdns_mdns::config::MDNS_PORT);
+            if clash {
+                warn!(
+                    "the recursor is on port {} ({}), which mDNS ingest needs; \
+                     move the recursor to :53 before enabling mDNS",
+                    microdns_mdns::config::MDNS_PORT,
+                    recursor.listen
+                );
+            }
+        }
+
+        let source = microdns_mdns::MdnsSource::new(db.clone());
+        mdns_handle = Some(source.handle());
+        let rx = shutdown_rx.clone();
+        tasks.push(tokio::spawn(async move {
+            // A failure here (no multicast on the interface, port in use) must
+            // not take DNS down with it.
+            if let Err(e) = source.run(rx).await {
+                error!("mDNS source error: {e}");
+            }
+        }));
     }
 
     // Start recursive DNS server
@@ -676,7 +744,7 @@ async fn main() -> Result<()> {
             if let Some(handles) = lb_handles.take() {
                 api = api.with_lb(handles);
             }
-            if let Some(handle) = mdns_handle.take() {
+            if let Some(handle) = mdns_handle.clone() {
                 api = api.with_mdns(handle);
             }
             api = api.with_query_tracker(query_tracker.clone());
@@ -782,6 +850,52 @@ async fn main() -> Result<()> {
 
 /// Migrate DHCP pools, reservations, and DNS forwarders from TOML config into
 /// the database. Only runs once — if the DB tables already have data, this is a no-op.
+/// Announce zone changes to the configured secondaries.
+///
+/// Writes arrive one per changed zone, and a single API call or DHCP
+/// registration can bump a zone's serial two or three times (forward record,
+/// reverse PTR, and so on). Sending a NOTIFY for each would have the secondary
+/// transferring the same zone repeatedly, so changes are collected over a short
+/// window and collapsed to one NOTIFY per zone.
+async fn notify_agent(
+    notifier: microdns_auth::notify::Notifier,
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<String>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    /// Quiet window before announcing. Long enough to absorb a burst, short
+    /// enough that a secondary is current within seconds.
+    const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+    loop {
+        let first = tokio::select! {
+            zone = changes.recv() => match zone {
+                Some(zone) => zone,
+                // Every writer dropped its handle, which only happens at
+                // shutdown.
+                None => break,
+            },
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+        };
+
+        let mut zones = vec![first];
+        tokio::time::sleep(SETTLE).await;
+        while let Ok(zone) = changes.try_recv() {
+            zones.push(zone);
+        }
+        zones.sort();
+        zones.dedup();
+
+        for zone in zones {
+            notifier.notify_zone(&zone).await;
+        }
+    }
+}
+
 fn migrate_toml_to_db(config: &Config, db: &Db) {
     let empty = match db.dhcp_tables_empty() {
         Ok(v) => v,
