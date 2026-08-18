@@ -9,6 +9,13 @@ enabled = true
 listen = "0.0.0.0:53"
 zones = ["example.com"]
 
+# Learn .local names announced on the local segment and publish them here, so
+# clients on other subnets can resolve them (see docs/mdns-ingest.md).
+# [mdns]
+# enabled = true
+# zone = "mdns.example.com"
+# deny = ["chromecast-*"]
+
 [api.rest]
 enabled = true
 listen = "0.0.0.0:8080"

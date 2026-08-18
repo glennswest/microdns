@@ -90,6 +90,8 @@ All instances are managed by **mkube** which auto-deploys from the container reg
 - **DHCPv6** — Stateful address assignment, prefix delegation
 - **SLAAC** — Router Advertisement daemon
 - **DNS Auto-Registration** — DHCP leases automatically create A/AAAA + PTR records with deduplication
+- **mDNS Ingest** — Learns `.local` names announced on the local segment and publishes them as authoritative records, so cross-subnet clients can resolve names that multicast (IP TTL 1) can never reach them ([docs](docs/mdns-ingest.md))
+- **Record Provenance** — Every record carries a `source` (`manual`/`dhcp`/`mdns`/`k8s`); automatic sources prune only their own records and never shadow a curated one
 - **IPAM** — IP address management for container workloads
 - **Database-Driven Config** — All pools, reservations, forwarders stored in redb, managed via REST API
 - **TOML Bootstrap Migration** — One-time import from TOML config on first boot
@@ -155,7 +157,7 @@ microdns --listen-dns 0.0.0.0:53 --data-dir /data --mode standalone
 | Port | Protocol | Service |
 |------|----------|---------|
 | 53 | UDP/TCP | DNS (auth or recursor) |
-| 5353 | UDP/TCP | DNS (recursor, when auth uses 53) |
+| 5353 | UDP/TCP | DNS (recursor, when auth uses 53) — or mDNS ingest, which owns this port when enabled |
 | 67 | UDP | DHCPv4 |
 | 547 | UDP | DHCPv6 |
 | 80 | TCP | Dashboard + WebSocket |
@@ -294,6 +296,25 @@ forward_zone = "gw.lo"
 reverse_zone_v4 = "1.168.192.in-addr.arpa"
 reverse_zone_v6 = ""
 default_ttl = 300
+
+# --- mDNS ingest (off by default) ---
+# Learns .local names announced on this segment and publishes them as
+# authoritative records, so other subnets can resolve them. See
+# docs/mdns-ingest.md.
+
+[mdns]
+enabled = false
+zone = "mdns.gw.lo"       # required when enabled — where discovered names land
+ttl_min = 60              # floor: a legacy response's 10s TTL would churn the zone
+ttl_max = 1200            # ceiling: a device cannot pin a stale record
+services = true           # also mirror DNS-SD PTR/SRV/TXT
+allow = []                # glob patterns to publish; empty allows all
+deny = ["chromecast-*"]   # glob patterns never to publish; deny wins
+query_interval_secs = 300 # DNS-SD enumeration interval; 0 = passive only
+ipv6 = false              # also join ff02::fb
+bind = "0.0.0.0"
+interfaces = []           # interface addresses to join on; empty = kernel picks
+debounce_secs = 5
 
 # --- Messaging ---
 
@@ -485,7 +506,7 @@ gate all DNS operations on this endpoint.
 
 Response (200):
 ```json
-{"status": "ok", "version": "0.4.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
+{"status": "ok", "version": "0.5.0", "zones": 12, "uptime_seconds": 86400, "uptime": "1d 0h 0m 0s"}
 ```
 
 Response (503):
@@ -529,6 +550,19 @@ GET    /api/v1/logs?limit=100&level=info&module=dhcp
 ```
 
 In-memory ring buffer (1000 entries) with level/module filtering.
+
+### mDNS
+
+```
+GET    /api/v1/mdns/status
+GET    /api/v1/mdns/discovered
+```
+
+`status` reports counters, cache size and the DNS-SD service types seen on the
+segment. `discovered` is the live discovery table — everything heard on the
+wire, including names config filtered out (`published_as: null`), which is what
+distinguishes "the device is not announcing" from "we chose not to publish it".
+See [docs/mdns-ingest.md](docs/mdns-ingest.md).
 
 ## gRPC API
 

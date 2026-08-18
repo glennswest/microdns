@@ -100,25 +100,28 @@ Each instance forwards queries for peer zones to the peer's DNS server. If the p
 - **Cross-network forwarding**: All instances forward to all peer zones including reverse and utility zones
 - **stormdbase migration**: Container base switched from scratch to stormdbase for process supervision, SSH, health probes
 
-## In Progress — mDNS ingest (issue #8)
+## mDNS Ingest (issue #8, shipped in v0.5.0)
 
-Bridges mDNS (`.local`) announcements into authoritative unicast DNS so
-cross-subnet clients can resolve names that multicast (IP TTL 1) can never
-reach them. New crate `microdns-mdns`, modelled on `microdns-k8s`: a source
-that watches an external system and reconciles a zone it owns.
+`crates/microdns-mdns` listens on 224.0.0.251:5353, learns `.local` names
+announced on the instance's own segment, and publishes them into a configured
+zone as authoritative records — so cross-subnet clients resolve names that
+multicast (IP TTL 1) can never reach them. Off by default; `[mdns] enabled`
+plus a `zone` turns it on. Design and operational notes: `docs/mdns-ingest.md`.
 
-- [ ] `RecordSource` on `Record` (manual / dhcp / mdns / k8s) — discovered
-      records are labelled, and a manual record always wins a conflict
-- [ ] `crates/microdns-mdns` — multicast socket, packet parse, TTL cache,
-      re-query before expiry, goodbye (TTL 0) handling, zone reconcile
-- [ ] `[mdns]` config block: `enabled`, `zone`, `ttl_max`, `ttl_min`,
-      `services`, `allow`/`deny`, `query_interval_secs`, `ipv6`
-- [ ] Wire into `src/main.rs` as a task alongside the k8s source
-- [ ] REST: `GET /api/v1/mdns/status`, `GET /api/v1/mdns/discovered`
-- [ ] Docs (`docs/mdns-ingest.md`, README), changelog, sample config
-- [ ] Release v0.5.0
+Two invariants worth remembering before changing anything here:
+
+- **`RecordSource` decides ownership.** Every record carries `manual`/`dhcp`/
+  `mdns`/`k8s`. The mDNS reconcile touches only `mdns` records, so a curated
+  record in the same zone is never deleted and never shadowed.
+- **Withdrawal waits out a 45 s startup grace.** The cache is empty after a
+  restart because nothing has announced yet, not because devices left.
+
+Remaining:
+
 - [ ] Deploy to the g9/g8 instances and confirm `teslatracker-52c4` resolves
       cross-subnet (the case issue #8 was filed for)
+- [ ] mkube: `[mdns]` block support in generated per-network TOML (mkube
+      regenerates these configs, so a hand-added block would be overwritten)
 
 ## TODO
 
@@ -131,3 +134,5 @@ that watches an external system and reconciles a zone it owns.
 - [ ] DNS-over-TLS (DoT) support
 - [ ] DNSSEC signing
 - [ ] Automated integration tests for cross-network DNS resolution
+- [ ] Wire the NOTIFY sender (`microdns-auth::notify`) into the record-write path
+- [ ] mDNS: optional reverse (PTR) records for discovered addresses

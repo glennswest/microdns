@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0] - 2026-08-18
+
+### Added
+- **feat(mdns):** mDNS ingest (`microdns-mdns`) — listens for `.local` announcements on the instance's own segment and publishes them as ordinary authoritative records, so cross-subnet clients can resolve names that multicast (IP TTL 1) can never reach them (closes #8). Passive listening plus periodic DNS-SD browsing (`_services._dns-sd._udp.local`, then each service type learned); addresses, PTR/SRV/TXT service records, goodbye (TTL 0) withdrawal, TTL clamping into a configured window, and RFC 6762 §5.2 cache maintenance that re-queries at 80% of a record's lifetime so a device that only ever announces at boot stays published. Names inside rdata are rewritten into the publish zone, so a DNS-SD browse that starts in the zone stays there. Off by default; enable with `[mdns] enabled = true` and a `zone`. Documented in `docs/mdns-ingest.md`
+- **feat(core):** Records now record their origin — new `RecordSource` (`manual` / `dhcp` / `mdns` / `k8s`) on `Record`, surfaced as `source` in the REST record JSON. Automatic sources own what they create and may prune it; `manual` records are never touched by a source and win any conflict with a discovered name. Rows written before the field existed deserialize as `manual`, which is the safe reading. DHCP auto-registration and the Kubernetes source now label their records (and the PTRs they sync) accordingly
+- **feat(api):** `GET /api/v1/mdns/status` (counters, cache size, service types seen) and `GET /api/v1/mdns/discovered` (the live discovery table, including names config filtered out and where each is published — `published_as: null` marks a filtered name, which is what separates "not announcing" from "not published")
+- **feat(auth):** AXFR is now access-controlled and chunked. `[dns.auth] allow_transfer` takes a list of CIDRs (default: RFC1918 + loopback) and any TCP peer outside them gets REFUSED before a single record is read — an AXFR hands over a complete map of internal hosts. Transfers are also split into messages of 100 records (RFC 5936 §2.2) instead of one giant message, so a large zone can no longer overflow the 16-bit TCP length prefix and silently corrupt the transfer
+- **feat(auth):** Outbound DNS NOTIFY sender (`microdns-auth::notify::Notifier`, RFC 1996) with `[dns.auth] notify` config listing secondaries as `ip` or `ip:port`. Collapses a secondary's change-detection latency from the 3600 s SOA refresh to seconds. The module and config are in place; wiring it to the record-write path is still outstanding
+- **feat(api):** `/api/v1/health` now reflects database readability (enhancement request from mkube, `enhancements/health-reflects-database.md`). 200 is returned only when a cheap zone-count read succeeds (new `Db::zone_count()` using redb table `len()` — no deserialization; zero zones is healthy). A missing/locked/corrupt database returns 503 with `{"status":"unhealthy","check":"database","error":"..."}`. mkube v6.2.1 gates all DNS operations per instance on this probe (15s TTL, 1.5s timeout)
+
 ## [0.4.0] - 2026-07-14
 
 ### Changed
@@ -12,14 +22,6 @@
 - **build:** deb/rpm packaging (nfpm) + native systemd unit for arm64/armv7, and a size-optimized release profile (strip + LTO + `panic=abort`).
 
 ## [Unreleased]
-
-### 2026-08-17
-- **feat(core):** Records now record their origin — new `RecordSource` (`manual` / `dhcp` / `mdns` / `k8s`) on `Record`, surfaced as `source` in the REST record JSON. Automatic sources own what they create and may prune it; `manual` records are never touched by a source and win any conflict with an auto-discovered name. Rows written before the field existed deserialize as `manual`, which is the safe reading. DHCP auto-registration and the Kubernetes source now label their records (and the PTRs they sync) accordingly
-- **feat(auth):** AXFR is now access-controlled and chunked. `[dns.auth] allow_transfer` takes a list of CIDRs (default: RFC1918 + loopback) and any TCP peer outside them gets REFUSED before a single record is read — an AXFR hands over a complete map of internal hosts. Transfers are also split into messages of 100 records (RFC 5936 §2.2) instead of one giant message, so a large zone can no longer overflow the 16-bit TCP length prefix and silently corrupt the transfer
-- **feat(auth):** Outbound DNS NOTIFY sender (`microdns-auth::notify::Notifier`, RFC 1996) with `[dns.auth] notify` config listing secondaries as `ip` or `ip:port`. Collapses a secondary's change-detection latency from the 3600 s SOA refresh to seconds. The module and config are in place; wiring it to the record-write path is still outstanding
-
-### 2026-08-09
-- **feat(api):** `/api/v1/health` now reflects database readability (enhancement request from mkube, `enhancements/health-reflects-database.md`). 200 is returned only when a cheap zone-count read succeeds (new `Db::zone_count()` using redb table `len()` — no deserialization; zero zones is healthy). A missing/locked/corrupt database returns 503 with `{"status":"unhealthy","check":"database","error":"..."}`. mkube v6.2.1 gates all DNS operations per instance on this probe (15s TTL, 1.5s timeout)
 
 ### 2026-05-03
 - **feat:** Persisted "last queried" timestamp per `(fqdn, type)` — every DNS query landing on the auth server bumps an in-memory `QueryTracker` (lock-free `DashMap`); a periodic 60 s flush task writes dirty rows to a new `query_stats` redb table. Hydrated on startup so the dashboard view survives a quick restart. Surfaced in `/api/v1/lb/resolutions` (`last_queried_at`, `query_count`) and rendered in the Resolution panel under each FQDN ("Last queried 2m ago · 4,182 total"). Also useful operationally to spot stale records that nothing actually resolves
