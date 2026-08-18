@@ -299,7 +299,8 @@ async fn main() -> Result<()> {
         if auth_config.enabled {
             let addr: SocketAddr = auth_config.listen.parse()?;
             let server = AuthServer::new(addr, db.clone())
-                .with_query_tracker(query_tracker.clone());
+                .with_query_tracker(query_tracker.clone())
+                .with_allow_transfer(&auth_config.allow_transfer);
             let rx = shutdown_rx.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = server.run(rx).await {

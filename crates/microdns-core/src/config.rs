@@ -112,6 +112,29 @@ pub struct DnsAuthConfig {
     pub listen: String,
     #[serde(default)]
     pub zones: Vec<String>,
+    /// Addresses permitted to request a zone transfer (AXFR), as CIDRs.
+    ///
+    /// An AXFR hands over a complete map of internal hosts, so this defaults to
+    /// private ranges only — enough for a secondary on the same network to
+    /// replicate, while refusing anything routed in from outside.
+    #[serde(default = "default_allow_transfer")]
+    pub allow_transfer: Vec<String>,
+    /// Secondaries to send NOTIFY to when a zone changes, as `ip` or `ip:port`.
+    ///
+    /// Without this a secondary only discovers changes when its SOA refresh
+    /// timer fires — an hour on the zones here — so a record added during an
+    /// incident would take that long to reach the fallback.
+    #[serde(default)]
+    pub notify: Vec<String>,
+}
+
+fn default_allow_transfer() -> Vec<String> {
+    vec![
+        "10.0.0.0/8".to_string(),
+        "172.16.0.0/12".to_string(),
+        "192.168.0.0/16".to_string(),
+        "127.0.0.0/8".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

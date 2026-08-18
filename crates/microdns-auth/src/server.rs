@@ -6,7 +6,7 @@ use hickory_proto::rr::{LowerName, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use microdns_core::db::Db;
 use microdns_core::query_tracker::QueryTracker;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,11 +20,18 @@ const MAX_TCP_CONNECTIONS: usize = 1000;
 /// Timeout for TCP connection handling
 const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Records per AXFR message. RFC 5936 sends a zone as a sequence of messages;
+/// this keeps each one far below the 65535-byte TCP framing limit even for
+/// large records such as long TXT strings.
+const AXFR_RECORDS_PER_MESSAGE: usize = 100;
+
 pub struct AuthServer {
     listen_addr: SocketAddr,
     catalog: Arc<ZoneCatalog>,
     db: Db,
     tracker: Option<Arc<QueryTracker>>,
+    /// CIDRs permitted to request a zone transfer. Empty denies everything.
+    allow_transfer: Arc<Vec<IpNet>>,
 }
 
 impl AuthServer {
@@ -34,7 +41,31 @@ impl AuthServer {
             catalog: Arc::new(ZoneCatalog::new(db.clone())),
             db,
             tracker: None,
+            allow_transfer: Arc::new(Vec::new()),
         }
+    }
+
+    /// Set the CIDRs permitted to request a zone transfer. Entries that do not
+    /// parse are dropped with a warning rather than failing startup — a typo in
+    /// an ACL must not take DNS down, and the effect is to deny, not permit.
+    pub fn with_allow_transfer(mut self, cidrs: &[String]) -> Self {
+        let nets: Vec<IpNet> = cidrs
+            .iter()
+            .filter_map(|c| match IpNet::parse(c) {
+                Some(net) => Some(net),
+                None => {
+                    warn!("ignoring invalid allow_transfer entry '{c}'");
+                    None
+                }
+            })
+            .collect();
+        if nets.is_empty() {
+            warn!("allow_transfer is empty — all zone transfer requests will be refused");
+        } else {
+            info!("zone transfers permitted from: {}", cidrs.join(", "));
+        }
+        self.allow_transfer = Arc::new(nets);
+        self
     }
 
     pub fn with_query_tracker(mut self, tracker: Arc<QueryTracker>) -> Self {
@@ -57,6 +88,7 @@ impl AuthServer {
         let catalog_tcp = self.catalog.clone();
         let db_tcp = self.db.clone();
         let tracker_tcp = self.tracker.clone();
+        let allow_tcp = self.allow_transfer.clone();
 
         // TCP accept loop with connection limit
         let tcp_semaphore = Arc::new(Semaphore::new(MAX_TCP_CONNECTIONS));
@@ -77,10 +109,13 @@ impl AuthServer {
                                 let catalog = catalog_tcp.clone();
                                 let db = db_tcp.clone();
                                 let tracker = tracker_tcp.clone();
+                                let allow = allow_tcp.clone();
                                 tokio::spawn(async move {
                                     let result = tokio::time::timeout(
                                         TCP_TIMEOUT,
-                                        handle_tcp_connection(stream, &catalog, &db, tracker.as_deref()),
+                                        handle_tcp_connection(
+                                            stream, &catalog, &db, tracker.as_deref(), src, &allow,
+                                        ),
                                     ).await;
                                     match result {
                                         Ok(Err(e)) => warn!("TCP handler error from {src}: {e}"),
@@ -257,6 +292,8 @@ async fn handle_tcp_connection(
     catalog: &ZoneCatalog,
     db: &Db,
     tracker: Option<&QueryTracker>,
+    peer: SocketAddr,
+    allow_transfer: &[IpNet],
 ) -> anyhow::Result<()> {
     // Read 2-byte length prefix
     let msg_len = stream.read_u16().await? as usize;
@@ -281,31 +318,57 @@ async fn handle_tcp_connection(
         let zone_name = qname.trim_end_matches('.');
         debug!("AXFR request for {zone_name}");
 
+        // A zone transfer hands over a complete map of internal hosts, so the
+        // peer must be explicitly permitted before we build anything.
+        if !transfer_allowed(peer, allow_transfer) {
+            warn!("AXFR for {zone_name} refused: {peer} is not in allow_transfer");
+            let wire = refusal(&request, queries)?;
+            stream.write_all(&(wire.len() as u16).to_be_bytes()).await?;
+            stream.write_all(&wire).await?;
+            stream.flush().await?;
+            return Ok(());
+        }
+
         let zt = ZoneTransfer::new(db.clone());
         match zt.build_axfr_records(zone_name) {
             Ok(records) => {
-                // Send records in a single response message per RFC 5936
-                // (small zones fit in one message; large zones could be split)
-                let mut response = hickory_proto::op::Message::new();
-                response.set_id(request.id());
-                response.set_message_type(MessageType::Response);
-                response.set_op_code(OpCode::Query);
-                response.set_authoritative(true);
-                response.set_response_code(ResponseCode::NoError);
+                // RFC 5936 §2.2: a zone is sent as a *sequence* of messages.
+                // Packing every record into one message caps the zone at the
+                // 64 KB TCP length prefix, and `len as u16` would wrap silently
+                // rather than error — a corrupt transfer that is very hard to
+                // diagnose. Chunking keeps each message well under the limit.
+                let total = records.len();
+                let mut sent = 0;
 
-                for query in queries {
-                    response.add_query(query.clone());
+                for chunk in records.chunks(AXFR_RECORDS_PER_MESSAGE) {
+                    let mut response = hickory_proto::op::Message::new();
+                    response.set_id(request.id());
+                    response.set_message_type(MessageType::Response);
+                    response.set_op_code(OpCode::Query);
+                    response.set_authoritative(true);
+                    response.set_response_code(ResponseCode::NoError);
+
+                    for query in queries {
+                        response.add_query(query.clone());
+                    }
+                    for record in chunk {
+                        response.add_answer(record.clone());
+                    }
+
+                    let wire = response.to_bytes()?;
+                    if wire.len() > u16::MAX as usize {
+                        return Err(anyhow::anyhow!(
+                            "AXFR message for {zone_name} exceeded 65535 bytes even when \
+                             chunked; lower AXFR_RECORDS_PER_MESSAGE"
+                        ));
+                    }
+                    stream.write_all(&(wire.len() as u16).to_be_bytes()).await?;
+                    stream.write_all(&wire).await?;
+                    sent += chunk.len();
                 }
 
-                for record in records {
-                    response.add_answer(record);
-                }
-
-                let wire = response.to_bytes()?;
-                let len = wire.len() as u16;
-                stream.write_all(&len.to_be_bytes()).await?;
-                stream.write_all(&wire).await?;
                 stream.flush().await?;
+                info!("AXFR {zone_name} -> {peer}: sent {sent}/{total} records");
             }
             Err(e) => {
                 warn!("AXFR failed for {zone_name}: {e}");
@@ -334,4 +397,118 @@ async fn handle_tcp_connection(
     }
 
     Ok(())
+}
+
+/// A CIDR block, kept local so the ACL adds no dependency.
+#[derive(Debug, Clone, Copy)]
+pub struct IpNet {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl IpNet {
+    /// Parse `10.0.0.0/8`, or a bare address treated as a single host.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        let (addr_part, prefix_part) = match s.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (s, None),
+        };
+        let addr: IpAddr = addr_part.parse().ok()?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix_part {
+            Some(p) => p.parse::<u8>().ok()?,
+            None => max,
+        };
+        if prefix > max {
+            return None;
+        }
+        Some(Self { addr, prefix })
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, ip) {
+            (IpAddr::V4(net), IpAddr::V4(other)) => {
+                let mask = if self.prefix == 0 { 0 } else { u32::MAX << (32 - self.prefix) };
+                (u32::from(net) & mask) == (u32::from(other) & mask)
+            }
+            (IpAddr::V6(net), IpAddr::V6(other)) => {
+                let mask = if self.prefix == 0 {
+                    0u128
+                } else {
+                    u128::MAX << (128 - self.prefix)
+                };
+                (u128::from(net) & mask) == (u128::from(other) & mask)
+            }
+            // An IPv4-mapped IPv6 peer should still match an IPv4 rule.
+            (IpAddr::V4(_), IpAddr::V6(other)) => other
+                .to_ipv4_mapped()
+                .is_some_and(|v4| self.contains(IpAddr::V4(v4))),
+            (IpAddr::V6(_), IpAddr::V4(_)) => false,
+        }
+    }
+}
+
+/// Whether a peer may request a zone transfer. Denies by default.
+fn transfer_allowed(peer: SocketAddr, allow: &[IpNet]) -> bool {
+    allow.iter().any(|net| net.contains(peer.ip()))
+}
+
+/// Build a REFUSED response for a request we will not serve.
+fn refusal(
+    request: &hickory_proto::op::Message,
+    queries: &[hickory_proto::op::Query],
+) -> anyhow::Result<Vec<u8>> {
+    let mut response = hickory_proto::op::Message::new();
+    response.set_id(request.id());
+    response.set_message_type(MessageType::Response);
+    response.set_op_code(OpCode::Query);
+    response.set_response_code(ResponseCode::Refused);
+    for query in queries {
+        response.add_query(query.clone());
+    }
+    Ok(response.to_bytes()?)
+}
+
+#[cfg(test)]
+mod acl_tests {
+    use super::*;
+
+    #[test]
+    fn cidr_matching() {
+        let net = IpNet::parse("192.168.0.0/16").unwrap();
+        assert!(net.contains("192.168.1.253".parse().unwrap()));
+        assert!(net.contains("192.168.200.199".parse().unwrap()));
+        assert!(!net.contains("10.0.0.1".parse().unwrap()));
+
+        // A bare address is a single host.
+        let host = IpNet::parse("192.168.1.253").unwrap();
+        assert!(host.contains("192.168.1.253".parse().unwrap()));
+        assert!(!host.contains("192.168.1.254".parse().unwrap()));
+
+        assert!(IpNet::parse("192.168.0.0/33").is_none());
+        assert!(IpNet::parse("not-an-address").is_none());
+    }
+
+    #[test]
+    fn transfers_are_denied_by_default() {
+        let peer: SocketAddr = "192.168.1.253:5000".parse().unwrap();
+        // Empty ACL denies everything — a missing config must not expose zones.
+        assert!(!transfer_allowed(peer, &[]));
+
+        let allow = vec![IpNet::parse("192.168.0.0/16").unwrap()];
+        assert!(transfer_allowed(peer, &allow));
+
+        let outside: SocketAddr = "203.0.113.5:5000".parse().unwrap();
+        assert!(!transfer_allowed(outside, &allow));
+    }
+
+    #[test]
+    fn ipv4_mapped_peers_match_ipv4_rules() {
+        // A dual-stack listener reports IPv4 peers as ::ffff:a.b.c.d; without
+        // this the ACL would silently refuse every legitimate secondary.
+        let allow = vec![IpNet::parse("192.168.0.0/16").unwrap()];
+        let mapped: SocketAddr = "[::ffff:192.168.1.253]:5000".parse().unwrap();
+        assert!(transfer_allowed(mapped, &allow));
+    }
 }

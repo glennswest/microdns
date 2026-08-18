@@ -13,6 +13,10 @@
 
 ## [Unreleased]
 
+### 2026-08-17
+- **feat(auth):** AXFR is now access-controlled and chunked. `[dns.auth] allow_transfer` takes a list of CIDRs (default: RFC1918 + loopback) and any TCP peer outside them gets REFUSED before a single record is read — an AXFR hands over a complete map of internal hosts. Transfers are also split into messages of 100 records (RFC 5936 §2.2) instead of one giant message, so a large zone can no longer overflow the 16-bit TCP length prefix and silently corrupt the transfer
+- **feat(auth):** Outbound DNS NOTIFY sender (`microdns-auth::notify::Notifier`, RFC 1996) with `[dns.auth] notify` config listing secondaries as `ip` or `ip:port`. Collapses a secondary's change-detection latency from the 3600 s SOA refresh to seconds. The module and config are in place; wiring it to the record-write path is still outstanding
+
 ### 2026-08-09
 - **feat(api):** `/api/v1/health` now reflects database readability (enhancement request from mkube, `enhancements/health-reflects-database.md`). 200 is returned only when a cheap zone-count read succeeds (new `Db::zone_count()` using redb table `len()` — no deserialization; zero zones is healthy). A missing/locked/corrupt database returns 503 with `{"status":"unhealthy","check":"database","error":"..."}`. mkube v6.2.1 gates all DNS operations per instance on this probe (15s TTL, 1.5s timeout)
 
