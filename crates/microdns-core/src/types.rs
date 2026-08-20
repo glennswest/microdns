@@ -187,6 +187,14 @@ pub struct Record {
     /// this field existed are never mistaken for something a source may prune.
     #[serde(default)]
     pub source: RecordSource,
+    /// Which instance's source created it, when that matters.
+    ///
+    /// Several instances write into one shared zone — each registering what it
+    /// hears on its own segment — so "is this mine to withdraw?" cannot be
+    /// answered by `source` alone. `None` means unattributed, which is what
+    /// every record written before this field existed reads as.
+    #[serde(default)]
+    pub origin: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

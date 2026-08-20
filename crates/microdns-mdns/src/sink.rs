@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use microdns_core::db::Db;
 use microdns_core::types::{RecordData, RecordSource};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -37,11 +37,19 @@ pub enum ZoneSink {
 
 impl ZoneSink {
     /// Build the sink the config calls for.
-    pub fn new(db: Db, config: &MdnsConfig) -> anyhow::Result<Self> {
+    pub fn new(db: Db, config: &MdnsConfig, instance_id: &str) -> anyhow::Result<Self> {
         if config.is_holder() {
-            Ok(ZoneSink::Local(Box::new(Publisher::new(db, config)?)))
+            Ok(ZoneSink::Local(Box::new(Publisher::new(
+                db,
+                config,
+                instance_id,
+            )?)))
         } else {
-            Ok(ZoneSink::Remote(Box::new(RemoteZone::new(db, config)?)))
+            Ok(ZoneSink::Remote(Box::new(RemoteZone::new(
+                db,
+                config,
+                instance_id,
+            )?)))
         }
     }
 
@@ -70,23 +78,15 @@ impl ZoneSink {
 
 /// The zone as held by another instance, written to over its REST API.
 pub struct RemoteZone {
-    db: Db,
     client: reqwest::Client,
     /// `host:port` of the holder's API.
     holder: String,
     zone: String,
-    /// Record ids this instance created in the holder's zone, by name and
-    /// rdata. Persisted locally so a restart still knows which records are ours
-    /// to withdraw — the alternative is guessing, and guessing wrong here means
-    /// deleting a name another segment is responsible for.
-    published: HashMap<String, Uuid>,
-}
-
-/// One entry of the local memory of what we wrote.
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct PublishedState {
-    #[serde(default)]
-    records: HashMap<String, Uuid>,
+    /// Stamped on everything this instance registers, and the only thing it
+    /// will withdraw. Ownership therefore lives with the record, in the zone,
+    /// rather than in local state that a restart could lose — an orphan left
+    /// behind by lost state is a name nothing would ever clean up.
+    instance_id: String,
 }
 
 /// The holder's view of a record, as its API returns it.
@@ -99,6 +99,8 @@ struct RemoteRecord {
     data: RecordData,
     #[serde(default)]
     source: RecordSource,
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,105 +110,74 @@ struct RemoteZoneRef {
 }
 
 impl RemoteZone {
-    fn new(db: Db, config: &MdnsConfig) -> anyhow::Result<Self> {
-        let holder = api_addr(&config.holder);
-        let published = db
-            .get_runtime_section::<PublishedState>(PUBLISHED_SECTION)
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-            .records;
+    fn new(db: Db, config: &MdnsConfig, instance_id: &str) -> anyhow::Result<Self> {
+        // The local note of what was registered is no longer needed now that
+        // records carry their origin; clear any left by an older version.
+        let _ = db.delete_runtime_section(PUBLISHED_SECTION);
         Ok(Self {
-            db,
             client: reqwest::Client::builder().timeout(TIMEOUT).build()?,
-            holder,
+            holder: api_addr(&config.holder),
             zone: config.zone.trim_end_matches('.').to_lowercase(),
-            published,
+            instance_id: instance_id.to_string(),
         })
     }
 
     /// Make the holder's zone match what this instance currently hears.
+    ///
+    /// Only records stamped with this instance's origin are ever removed, so
+    /// several instances can feed one zone without treading on each other.
     async fn apply(&mut self, desired: &[DesiredRecord], prune: bool) -> anyhow::Result<Applied> {
         let zone_id = self.ensure_zone().await?;
         let existing = self.fetch_records(&zone_id).await?;
 
-        // What the holder actually has, by key — the source of truth for
-        // whether one of our earlier writes is still there.
         let present: HashMap<String, &RemoteRecord> = existing
             .iter()
             .map(|r| (key(&r.name, &r.data), r))
             .collect();
 
         let mut applied = Applied::default();
-        let mut ours: HashMap<String, Uuid> = HashMap::new();
+        let mut wanted: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for want in desired {
             let k = key(&want.name, &want.data);
-            match present.get(&k) {
-                Some(record) => {
-                    // Already there. Claim it as ours only if we put it there,
-                    // or if nobody else has: a curated record with the same
-                    // name and value is left entirely alone.
-                    if record.source == RecordSource::Mdns {
-                        ours.insert(k, record.id);
-                    } else {
-                        applied.shadowed += 1;
-                    }
-                }
-                None => {
-                    // A curated record already owning this name wins.
-                    if existing.iter().any(|r| {
-                        r.name == want.name
-                            && r.data.record_type() == want.record_type()
-                            && r.source != RecordSource::Mdns
-                    }) {
-                        applied.shadowed += 1;
-                        continue;
-                    }
-                    match self.create(&zone_id, want).await {
-                        Ok(id) => {
-                            ours.insert(k, id);
-                            applied.created += 1;
-                        }
-                        Err(e) => warn!("mdns: could not register {}.{}: {e}", want.name, self.zone),
-                    }
-                }
+            wanted.insert(k.clone());
+
+            if present.contains_key(&k) {
+                // Already registered — by us, or by whoever else can hear it.
+                continue;
+            }
+            // A curated record already owning this name wins.
+            if existing.iter().any(|r| {
+                r.name == want.name
+                    && r.data.record_type() == want.record_type()
+                    && r.source != RecordSource::Mdns
+            }) {
+                applied.shadowed += 1;
+                continue;
+            }
+            match self.create(&zone_id, want).await {
+                Ok(()) => applied.created += 1,
+                Err(e) => warn!("mdns: could not register {}.{}: {e}", want.name, self.zone),
             }
         }
 
         if prune {
-            let stale: Vec<(String, Uuid)> = self
-                .published
-                .iter()
-                .filter(|(k, _)| !ours.contains_key(*k))
-                .map(|(k, id)| (k.clone(), *id))
-                .collect();
-            for (k, id) in stale {
-                // Only delete what is still there; a record the holder has
-                // already lost is simply forgotten.
-                if existing.iter().any(|r| r.id == id) {
-                    match self.delete(&zone_id, &id).await {
-                        Ok(()) => applied.deleted += 1,
-                        Err(e) => {
-                            warn!("mdns: could not withdraw {k} from {}: {e}", self.zone);
-                            ours.insert(k, id);
-                            continue;
-                        }
-                    }
+            for record in &existing {
+                let ours = record.source == RecordSource::Mdns
+                    && record.origin.as_deref() == Some(self.instance_id.as_str());
+                if !ours || wanted.contains(&key(&record.name, &record.data)) {
+                    continue;
                 }
-            }
-        } else {
-            // Still starting up: keep claiming what we wrote before, so the
-            // next prune does not treat it as somebody else's.
-            for (k, id) in &self.published {
-                ours.entry(k.clone()).or_insert(*id);
+                match self.delete(&zone_id, &record.id).await {
+                    Ok(()) => applied.deleted += 1,
+                    Err(e) => warn!(
+                        "mdns: could not withdraw {}.{}: {e}",
+                        record.name, self.zone
+                    ),
+                }
             }
         }
 
-        if ours != self.published {
-            self.published = ours;
-            self.remember();
-        }
         if applied.changed() {
             info!(
                 "mdns: {} on {} updated (+{} -{})",
@@ -216,29 +187,23 @@ impl RemoteZone {
         Ok(applied)
     }
 
+    /// Remove every name this instance registered, leaving other instances'
+    /// entries — and any curated record — untouched.
     async fn withdraw_all(&self) -> anyhow::Result<usize> {
         let zone_id = match self.zone_id().await? {
             Some(id) => id,
             None => return Ok(0),
         };
         let mut removed = 0;
-        for id in self.published.values() {
-            if self.delete(&zone_id, id).await.is_ok() {
+        for record in self.fetch_records(&zone_id).await? {
+            if record.source == RecordSource::Mdns
+                && record.origin.as_deref() == Some(self.instance_id.as_str())
+                && self.delete(&zone_id, &record.id).await.is_ok()
+            {
                 removed += 1;
             }
         }
-        let _ = self.db.delete_runtime_section(PUBLISHED_SECTION);
         Ok(removed)
-    }
-
-    /// Persist which records are ours, so a restart can still withdraw them.
-    fn remember(&self) {
-        let state = PublishedState {
-            records: self.published.clone(),
-        };
-        if let Err(e) = self.db.set_runtime_section(PUBLISHED_SECTION, &state) {
-            warn!("mdns: could not record what was registered: {e}");
-        }
     }
 
     async fn zone_id(&self) -> anyhow::Result<Option<Uuid>> {
@@ -279,7 +244,7 @@ impl RemoteZone {
         Ok(self.client.get(&url).send().await?.json().await?)
     }
 
-    async fn create(&self, zone_id: &Uuid, want: &DesiredRecord) -> anyhow::Result<Uuid> {
+    async fn create(&self, zone_id: &Uuid, want: &DesiredRecord) -> anyhow::Result<()> {
         let url = format!("http://{}/api/v1/zones/{zone_id}/records", self.holder);
         let response = self
             .client
@@ -290,15 +255,15 @@ impl RemoteZone {
                 "data": want.data,
                 "enabled": true,
                 "source": "mdns",
+                "origin": self.instance_id,
             }))
             .send()
             .await?;
         if !response.status().is_success() {
             anyhow::bail!("holder answered {}", response.status());
         }
-        let created: RemoteRecord = response.json().await?;
         debug!("mdns: registered {}.{} on {}", want.name, self.zone, self.holder);
-        Ok(created.id)
+        Ok(())
     }
 
     async fn delete(&self, zone_id: &Uuid, id: &Uuid) -> anyhow::Result<()> {

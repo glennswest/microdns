@@ -241,6 +241,7 @@ impl ZoneTransfer {
                 enabled: true,
                 health_check: None,
                 source: RecordSource::Manual,
+                origin: None,
                 created_at: now,
                 updated_at: now,
             })

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.1] - 2026-08-20
+
+### Fixed
+- **fix(api):** DNS-SD instance names were rejected with `400 Bad Request`, so every service whose name contains a space or non-ASCII character silently failed to register in a shared zone — `Epson ET-5170 Series._printer._tcp` and friends. `validate_dns_name` now understands presentation-format escapes: octal byte escapes (`\040` for a space, `\342\200\231` for a curly apostrophe — the form hickory prints), escaped punctuation (`\@`, `\.`), and it splits labels on unescaped dots only. The 63-byte label limit is measured on the decoded form, since one escape is four characters and one byte
+- **fix(mdns):** A record now records *which instance* registered it (`origin`), and a source withdraws only its own. Without it the instance holding a shared zone treated every discovered record as its own to prune: the moment it heard anything on its own segment, one reconcile would have deleted every name the other instances had registered. It survived only because an instance that hears nothing never reconciles. Ownership living on the record also removes the local bookkeeping a reporting instance kept, which could drift and orphan names that nothing would then clean up
+
 ## [0.9.0] - 2026-08-18
 
 ### Changed

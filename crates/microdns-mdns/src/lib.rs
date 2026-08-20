@@ -244,7 +244,7 @@ impl MdnsSource {
 
     /// Remove everything this instance put in the zone, wherever it is held.
     async fn withdraw(&self, config: &MdnsConfig) {
-        let sink = match sink::ZoneSink::new(self.db.clone(), config) {
+        let sink = match sink::ZoneSink::new(self.db.clone(), config, &self.instance_id) {
             Ok(sink) => sink,
             Err(e) => {
                 warn!("mdns: could not reach {} to withdraw: {e}", config.zone);
@@ -282,7 +282,7 @@ impl MdnsSource {
             None
         };
 
-        let mut sink = sink::ZoneSink::new(self.db.clone(), config)?;
+        let mut sink = sink::ZoneSink::new(self.db.clone(), config, &self.instance_id)?;
         // A reporting instance answers its own clients for the shared zone by
         // pointing them at whoever holds it.
         sink::ensure_forwarder(&self.db, config);
@@ -540,7 +540,7 @@ mod tests {
             translate::desired(cache.entries().cloned(), &config)
         };
 
-        let mut publisher = publish::Publisher::new(db.clone(), &config).unwrap();
+        let mut publisher = publish::Publisher::new(db.clone(), &config, "test").unwrap();
         publisher.apply(&desired, true).unwrap();
 
         let records = db
@@ -560,7 +560,7 @@ mod tests {
         let (db, _dir) = test_db();
         let config = config("mdns.g9.lo");
         let source = MdnsSource::new(db.clone());
-        let mut publisher = publish::Publisher::new(db.clone(), &config).unwrap();
+        let mut publisher = publish::Publisher::new(db.clone(), &config, "test").unwrap();
 
         let from = "192.168.9.134".parse().unwrap();
         source.absorb(
@@ -649,7 +649,7 @@ mod tests {
         let config = config("mdns.test.lo");
 
         // One discovered record, and one curated record that must survive.
-        let mut publisher = publish::Publisher::new(db.clone(), &config).unwrap();
+        let mut publisher = publish::Publisher::new(db.clone(), &config, "test").unwrap();
         publisher
             .apply(
                 &[DesiredRecord {
@@ -670,12 +670,24 @@ mod tests {
             enabled: true,
             health_check: None,
             source: RecordSource::Manual,
+            origin: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
         .unwrap();
 
-        MdnsSource::new(db.clone()).withdraw(&config).await;
+        // Withdrawing under a different instance id must take nothing: that
+        // record belongs to whoever registered it.
+        MdnsSource::new(db.clone())
+            .with_instance_id("someone-else")
+            .withdraw(&config)
+            .await;
+        assert_eq!(db.list_records(&zone.id).unwrap().len(), 2);
+
+        MdnsSource::new(db.clone())
+            .with_instance_id("test")
+            .withdraw(&config)
+            .await;
 
         let records = db.list_records(&zone.id).unwrap();
         assert_eq!(records.len(), 1);

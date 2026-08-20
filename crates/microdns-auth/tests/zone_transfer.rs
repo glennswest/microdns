@@ -65,6 +65,7 @@ fn seed_primary(db: &Db, serial: u32) -> Zone {
             enabled: true,
             health_check: None,
             source: RecordSource::Manual,
+            origin: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })

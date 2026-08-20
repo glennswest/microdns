@@ -283,6 +283,7 @@ fn proto_record_to_domain(pr: &proto::Record) -> anyhow::Result<Record> {
         enabled: pr.enabled,
         health_check: None,
         source: RecordSource::Manual,
+        origin: None,
         created_at,
         updated_at,
     })

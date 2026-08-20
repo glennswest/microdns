@@ -37,6 +37,8 @@ pub struct Publisher {
     db: Db,
     zone_id: Uuid,
     zone_name: String,
+    /// This instance's id, stamped on what it registers.
+    instance_id: String,
     /// Names already reported as shadowed, so the warning is logged once per
     /// name rather than on every reconcile.
     warned: std::collections::HashSet<(String, RecordType)>,
@@ -44,7 +46,7 @@ pub struct Publisher {
 
 impl Publisher {
     /// Open — creating if needed — the zone discovered names are published to.
-    pub fn new(db: Db, config: &MdnsConfig) -> anyhow::Result<Self> {
+    pub fn new(db: Db, config: &MdnsConfig, instance_id: &str) -> anyhow::Result<Self> {
         let zone_name = config.zone.trim_end_matches('.').to_lowercase();
         if zone_name.is_empty() {
             anyhow::bail!("mdns: publish zone must not be empty");
@@ -58,6 +60,7 @@ impl Publisher {
             db,
             zone_id: zone.id,
             zone_name,
+            instance_id: instance_id.to_string(),
             warned: std::collections::HashSet::new(),
         })
     }
@@ -75,9 +78,15 @@ impl Publisher {
     /// until the caller says the cache has had a chance to fill.
     pub fn apply(&mut self, desired: &[DesiredRecord], prune: bool) -> anyhow::Result<Applied> {
         let existing = self.db.list_records(&self.zone_id)?;
-        let (mine, theirs): (Vec<Record>, Vec<Record>) = existing
-            .into_iter()
-            .partition(|r| r.source == RecordSource::Mdns);
+        // Mine = discovered *and* registered by this instance. Several
+        // instances write into one shared zone, so `source` alone would have
+        // this one prune names another segment is responsible for — including,
+        // on the instance holding the zone, every name it did not hear itself.
+        // `None` counts as mine for records written before origin existed.
+        let (mine, theirs): (Vec<Record>, Vec<Record>) = existing.into_iter().partition(|r| {
+            r.source == RecordSource::Mdns
+                && r.origin.as_deref().is_none_or(|o| o == self.instance_id)
+        });
 
         let mut applied = Applied::default();
         let mut keep: Vec<Uuid> = Vec::new();
@@ -86,10 +95,11 @@ impl Publisher {
         for want in desired {
             // A curated record on the same name and type wins: publishing ours
             // alongside it would silently merge two answers into one RRset.
-            if let Some(owner) = theirs
-                .iter()
-                .find(|r| r.name == want.name && r.data.record_type() == want.record_type())
-            {
+            if let Some(owner) = theirs.iter().find(|r| {
+                r.name == want.name
+                    && r.data.record_type() == want.record_type()
+                    && r.source != RecordSource::Mdns
+            }) {
                 applied.shadowed += 1;
                 let key = (want.name.clone(), want.record_type());
                 if self.warned.insert(key) {
@@ -129,6 +139,7 @@ impl Publisher {
                         enabled: true,
                         health_check: None,
                         source: RecordSource::Mdns,
+                        origin: Some(self.instance_id.clone()),
                         created_at: now,
                         updated_at: now,
                     };
@@ -179,7 +190,9 @@ impl Publisher {
     pub fn withdraw_all(&self) -> anyhow::Result<usize> {
         let mut removed = 0;
         for record in self.db.list_records(&self.zone_id)? {
-            if record.source == RecordSource::Mdns {
+            if record.source == RecordSource::Mdns
+                && record.origin.as_deref().is_none_or(|o| o == self.instance_id)
+            {
                 self.db.delete_record(&record.id)?;
                 removed += 1;
             }
@@ -247,7 +260,7 @@ mod tests {
     #[test]
     fn publishing_is_idempotent_and_prunes_what_went_away() {
         let (db, _dir) = test_db();
-        let mut publisher = Publisher::new(db.clone(), &config()).unwrap();
+        let mut publisher = Publisher::new(db.clone(), &config(), "test").unwrap();
 
         let applied = publisher.apply(&[want("tracker", "192.168.9.134")], true).unwrap();
         assert_eq!(applied.created, 1);
@@ -276,7 +289,7 @@ mod tests {
     #[test]
     fn a_changed_address_replaces_the_old_one() {
         let (db, _dir) = test_db();
-        let mut publisher = Publisher::new(db.clone(), &config()).unwrap();
+        let mut publisher = Publisher::new(db.clone(), &config(), "test").unwrap();
 
         publisher.apply(&[want("tracker", "192.168.9.134")], true).unwrap();
         let applied = publisher.apply(&[want("tracker", "192.168.9.200")], true).unwrap();
@@ -291,7 +304,7 @@ mod tests {
     #[test]
     fn a_ttl_change_updates_in_place_rather_than_recreating() {
         let (db, _dir) = test_db();
-        let mut publisher = Publisher::new(db.clone(), &config()).unwrap();
+        let mut publisher = Publisher::new(db.clone(), &config(), "test").unwrap();
 
         publisher.apply(&[want("tracker", "192.168.9.134")], true).unwrap();
         let id = db.query_fqdn("tracker.mdns.g9.lo", RecordType::A).unwrap()[0].id;
@@ -309,7 +322,7 @@ mod tests {
     #[test]
     fn a_curated_record_is_never_shadowed_or_deleted() {
         let (db, _dir) = test_db();
-        let mut publisher = Publisher::new(db.clone(), &config()).unwrap();
+        let mut publisher = Publisher::new(db.clone(), &config(), "test").unwrap();
         let zone = db.get_zone_by_name("mdns.g9.lo").unwrap().unwrap();
 
         // An operator pinned this name by hand.
@@ -322,6 +335,7 @@ mod tests {
             enabled: true,
             health_check: None,
             source: RecordSource::Manual,
+            origin: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -346,7 +360,7 @@ mod tests {
     #[test]
     fn nothing_is_withdrawn_while_the_cache_is_still_filling() {
         let (db, _dir) = test_db();
-        let mut publisher = Publisher::new(db.clone(), &config()).unwrap();
+        let mut publisher = Publisher::new(db.clone(), &config(), "test").unwrap();
         publisher
             .apply(&[want("tracker", "192.168.9.134")], true)
             .unwrap();
@@ -364,12 +378,62 @@ mod tests {
     }
 
     #[test]
+    fn another_instances_discovered_names_are_left_alone() {
+        let (db, _dir) = test_db();
+        let zone_name = config().zone.clone();
+        let mut publisher = Publisher::new(db.clone(), &config(), "g9").unwrap();
+        let zone = db.get_zone_by_name(&zone_name).unwrap().unwrap();
+
+        // A name another instance heard on its own segment and registered here.
+        db.create_record(&Record {
+            id: Uuid::new_v4(),
+            zone_id: zone.id,
+            name: "printer".into(),
+            ttl: 120,
+            data: RecordData::A("192.168.8.20".parse().unwrap()),
+            enabled: true,
+            health_check: None,
+            source: RecordSource::Mdns,
+            origin: Some("g8".into()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .unwrap();
+
+        // This instance hears nothing at all. Before ownership was tracked this
+        // wiped the zone, since every discovered record looked like its own.
+        let applied = publisher.apply(&[], true).unwrap();
+        assert_eq!(applied.deleted, 0);
+        assert_eq!(db.list_records(&zone.id).unwrap().len(), 1);
+
+        // Its own names are still withdrawn normally.
+        publisher.apply(&[want("mine", "192.168.9.5")], true).unwrap();
+        assert_eq!(db.list_records(&zone.id).unwrap().len(), 2);
+        let applied = publisher.apply(&[], true).unwrap();
+        assert_eq!(applied.deleted, 1);
+        let left = db.list_records(&zone.id).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].origin.as_deref(), Some("g8"));
+    }
+
+    #[test]
+    fn registered_names_carry_the_instance_that_heard_them() {
+        let (db, _dir) = test_db();
+        let mut publisher = Publisher::new(db.clone(), &config(), "g9").unwrap();
+        publisher.apply(&[want("tracker", "192.168.9.134")], true).unwrap();
+
+        let records = db.query_fqdn("tracker.mdns.g9.lo", RecordType::A).unwrap();
+        assert_eq!(records[0].origin.as_deref(), Some("g9"));
+        assert_eq!(records[0].source, RecordSource::Mdns);
+    }
+
+    #[test]
     fn a_reverse_zone_is_rejected_as_a_publish_target() {
         let (db, _dir) = test_db();
         let cfg = MdnsConfig {
             zone: "9.168.192.in-addr.arpa".into(),
             ..Default::default()
         };
-        assert!(Publisher::new(db, &cfg).is_err());
+        assert!(Publisher::new(db, &cfg, "test").is_err());
     }
 }

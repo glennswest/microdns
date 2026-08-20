@@ -148,6 +148,7 @@ pub fn sync_ptr_for_a(
         enabled: true,
         health_check: None,
         source,
+        origin: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -221,6 +222,7 @@ pub fn sync_ptr_for_aaaa(
         enabled: true,
         health_check: None,
         source,
+        origin: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

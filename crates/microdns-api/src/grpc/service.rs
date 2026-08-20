@@ -225,6 +225,7 @@ impl proto::record_service_server::RecordService for MicroDnsGrpcService {
             enabled: req.enabled,
             health_check: None,
             source: RecordSource::Manual,
+            origin: None,
             created_at: now,
             updated_at: now,
         };

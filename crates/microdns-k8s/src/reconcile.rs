@@ -60,6 +60,7 @@ impl Reconciler {
                 enabled: true,
                 health_check: None,
                 source: RecordSource::K8s,
+                origin: None,
                 created_at: now,
                 updated_at: now,
             })

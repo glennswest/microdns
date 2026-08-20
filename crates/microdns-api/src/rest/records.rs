@@ -37,6 +37,8 @@ struct RecordResponse {
     /// What created this record — `manual`, `dhcp`, `mdns` or `k8s`. Clients
     /// use it to tell curated records from auto-discovered ones.
     source: RecordSource,
+    /// Which instance registered it, for records written into a shared zone.
+    origin: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -53,6 +55,7 @@ impl RecordResponse {
             enabled: r.enabled,
             health_check: r.health_check,
             source: r.source,
+            origin: r.origin,
             created_at: r.created_at.to_rfc3339(),
             updated_at: r.updated_at.to_rfc3339(),
         }
@@ -75,6 +78,11 @@ struct CreateRecordRequest {
     /// the trip over the API.
     #[serde(default)]
     source: RecordSource,
+    /// Which instance's source is registering it. Several instances write into
+    /// one shared zone, so this is what lets each withdraw its own names later
+    /// without touching anyone else's.
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +159,7 @@ async fn create_record(
         enabled: req.enabled,
         health_check: req.health_check,
         source: req.source,
+        origin: req.origin,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

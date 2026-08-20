@@ -86,6 +86,7 @@ impl DnsRegistrar {
             enabled: true,
             health_check: None,
             source: RecordSource::Dhcp,
+            origin: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -144,6 +145,7 @@ impl DnsRegistrar {
             enabled: true,
             health_check: None,
             source: RecordSource::Dhcp,
+            origin: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
