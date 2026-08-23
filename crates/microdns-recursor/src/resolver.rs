@@ -1,7 +1,7 @@
 use crate::cache::{self, CacheKey, DnsCache};
 use crate::forward::ForwardTable;
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
-use hickory_proto::rr::{LowerName, Name, RecordType};
+use hickory_proto::rr::{LowerName, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use microdns_core::db::Db;
 use std::net::SocketAddr;
@@ -322,7 +322,7 @@ fn record_to_proto(
     use hickory_proto::rr::rdata::{CNAME, MX, NS, PTR, SOA, SRV, TXT};
     use hickory_proto::rr::{RData, Record as DnsRecord};
     use microdns_core::types::RecordData;
-    use std::str::FromStr;
+    
 
     let fqdn_str = if record.name == "@" {
         let zone = db.find_zone_for_fqdn(&record.name).ok()??;
@@ -332,20 +332,25 @@ fn record_to_proto(
         format!("{}.{}.", record.name, zone.name)
     };
 
-    let name = Name::from_str(&fqdn_str).ok()?;
+    // Presentation-format names (DNS-SD instances carry spaces and UTF-8)
+    // need the tolerant parser; hickory's own rejects the decoded label.
+    let name = microdns_core::name::to_dns_name(&fqdn_str)?;
 
     let rdata = match &record.data {
         RecordData::A(addr) => RData::A((*addr).into()),
         RecordData::AAAA(addr) => RData::AAAA((*addr).into()),
-        RecordData::CNAME(n) => RData::CNAME(CNAME(Name::from_str(&ensure_fqdn(n)).ok()?)),
+        RecordData::CNAME(n) => RData::CNAME(CNAME(microdns_core::name::to_dns_name(&ensure_fqdn(n))?)),
         RecordData::MX { preference, exchange } => {
-            RData::MX(MX::new(*preference, Name::from_str(&ensure_fqdn(exchange)).ok()?))
+            RData::MX(MX::new(
+                *preference,
+                microdns_core::name::to_dns_name(&ensure_fqdn(exchange))?,
+            ))
         }
-        RecordData::NS(n) => RData::NS(NS(Name::from_str(&ensure_fqdn(n)).ok()?)),
-        RecordData::PTR(n) => RData::PTR(PTR(Name::from_str(&ensure_fqdn(n)).ok()?)),
+        RecordData::NS(n) => RData::NS(NS(microdns_core::name::to_dns_name(&ensure_fqdn(n))?)),
+        RecordData::PTR(n) => RData::PTR(PTR(microdns_core::name::to_dns_name(&ensure_fqdn(n))?)),
         RecordData::SOA(soa) => RData::SOA(SOA::new(
-            Name::from_str(&ensure_fqdn(&soa.mname)).ok()?,
-            Name::from_str(&ensure_fqdn(&soa.rname)).ok()?,
+            microdns_core::name::to_dns_name(&ensure_fqdn(&soa.mname))?,
+            microdns_core::name::to_dns_name(&ensure_fqdn(&soa.rname))?,
             soa.serial,
             soa.refresh as i32,
             soa.retry as i32,
@@ -356,7 +361,7 @@ fn record_to_proto(
             srv.priority,
             srv.weight,
             srv.port,
-            Name::from_str(&ensure_fqdn(&srv.target)).ok()?,
+            microdns_core::name::to_dns_name(&ensure_fqdn(&srv.target))?,
         )),
         RecordData::TXT(text) => RData::TXT(TXT::new(vec![text.clone()])),
         RecordData::CAA(_) => return None, // Simplified for now
@@ -369,12 +374,12 @@ fn build_soa_record_proto(
     zone: &microdns_core::types::Zone,
 ) -> Option<hickory_proto::rr::Record> {
     use hickory_proto::rr::rdata::SOA;
-    use hickory_proto::rr::{Name, RData, Record as DnsRecord};
-    use std::str::FromStr;
+    use hickory_proto::rr::{RData, Record as DnsRecord};
+    
 
-    let zone_name = Name::from_str(&ensure_fqdn(&zone.name)).ok()?;
-    let mname = Name::from_str(&ensure_fqdn(&zone.soa.mname)).ok()?;
-    let rname = Name::from_str(&ensure_fqdn(&zone.soa.rname)).ok()?;
+    let zone_name = microdns_core::name::to_dns_name(&ensure_fqdn(&zone.name))?;
+    let mname = microdns_core::name::to_dns_name(&ensure_fqdn(&zone.soa.mname))?;
+    let rname = microdns_core::name::to_dns_name(&ensure_fqdn(&zone.soa.rname))?;
 
     let rdata = RData::SOA(SOA::new(
         mname,

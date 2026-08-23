@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.2] - 2026-08-23
+
+### Fixed
+- **fix(dns):** Records whose name or target holds a DNS-SD service instance name were stored correctly but never answered — the response was built with `Name::from_str`, which decodes presentation-format escapes and then rejects the result because its parser only admits the conventional host character set. A label may hold any byte (RFC 2181 §11), and DNS-SD depends on it: `Epson ET-5170 Series._printer._tcp` is an ordinary name. New `microdns_core::name::to_dns_name` decodes the escapes and builds labels from raw bytes, the same path the wire parser takes; the auth server, the recursor's local-zone answers and AXFR output all use it. Symptom was a browse returning nothing for 29 of 65 PTR records while `dig` on a plain name worked
+
 ## [0.9.1] - 2026-08-20
 
 ### Fixed

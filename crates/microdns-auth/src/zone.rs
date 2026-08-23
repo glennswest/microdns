@@ -42,24 +42,24 @@ pub fn to_rdata(data: &RecordData) -> Option<RData> {
     match data {
         RecordData::A(addr) => Some(RData::A((*addr).into())),
         RecordData::AAAA(addr) => Some(RData::AAAA((*addr).into())),
-        RecordData::CNAME(name) => Name::from_str(&ensure_fqdn(name))
+        RecordData::CNAME(name) => microdns_core::name::to_dns_name(&ensure_fqdn(name)).ok_or(())
             .ok()
             .map(|n| RData::CNAME(CNAME(n))),
         RecordData::MX {
             preference,
             exchange,
-        } => Name::from_str(&ensure_fqdn(exchange))
+        } => microdns_core::name::to_dns_name(&ensure_fqdn(exchange)).ok_or(())
             .ok()
             .map(|name| RData::MX(MX::new(*preference, name))),
-        RecordData::NS(name) => Name::from_str(&ensure_fqdn(name))
+        RecordData::NS(name) => microdns_core::name::to_dns_name(&ensure_fqdn(name)).ok_or(())
             .ok()
             .map(|n| RData::NS(NS(n))),
-        RecordData::PTR(name) => Name::from_str(&ensure_fqdn(name))
+        RecordData::PTR(name) => microdns_core::name::to_dns_name(&ensure_fqdn(name)).ok_or(())
             .ok()
             .map(|n| RData::PTR(PTR(n))),
         RecordData::SOA(soa) => {
-            let mname = Name::from_str(&ensure_fqdn(&soa.mname)).ok()?;
-            let rname = Name::from_str(&ensure_fqdn(&soa.rname)).ok()?;
+            let mname = microdns_core::name::to_dns_name(&ensure_fqdn(&soa.mname))?;
+            let rname = microdns_core::name::to_dns_name(&ensure_fqdn(&soa.rname))?;
             Some(RData::SOA(SOA::new(
                 mname,
                 rname,
@@ -71,7 +71,7 @@ pub fn to_rdata(data: &RecordData) -> Option<RData> {
             )))
         }
         RecordData::SRV(srv) => {
-            let target = Name::from_str(&ensure_fqdn(&srv.target)).ok()?;
+            let target = microdns_core::name::to_dns_name(&ensure_fqdn(&srv.target))?;
             Some(RData::SRV(SRV::new(
                 srv.priority,
                 srv.weight,
@@ -158,7 +158,7 @@ fn ensure_fqdn(name: &str) -> String {
 
 /// Build the SOA record for a zone
 pub fn build_soa_record(zone: &Zone) -> Option<DnsRecord> {
-    let zone_name = Name::from_str(&ensure_fqdn(&zone.name)).ok()?;
+    let zone_name = microdns_core::name::to_dns_name(&ensure_fqdn(&zone.name))?;
     let soa_data = RecordData::SOA(zone.soa.clone());
     let rdata = to_rdata(&soa_data)?;
 
@@ -210,7 +210,7 @@ pub fn resolve_query(db: &Db, qname: &LowerName, qtype: RecordType) -> Vec<DnsRe
     for record in &records {
         let name = if record.name == "@" {
             match db.find_zone_for_fqdn(fqdn) {
-                Ok(Some(zone)) => match Name::from_str(&ensure_fqdn(&zone.name)) {
+                Ok(Some(zone)) => match microdns_core::name::to_dns_name(&ensure_fqdn(&zone.name)).ok_or(()) {
                     Ok(n) => n,
                     Err(_) => continue,
                 },
@@ -218,14 +218,14 @@ pub fn resolve_query(db: &Db, qname: &LowerName, qtype: RecordType) -> Vec<DnsRe
             }
         } else if record.name.starts_with('*') {
             // Wildcard match: respond with the queried FQDN, not *.zone
-            match Name::from_str(&ensure_fqdn(fqdn)) {
+            match microdns_core::name::to_dns_name(&ensure_fqdn(fqdn)).ok_or(()) {
                 Ok(n) => n,
                 Err(_) => continue,
             }
         } else {
             match db.find_zone_for_fqdn(fqdn) {
                 Ok(Some(zone)) => {
-                    match Name::from_str(&format!("{}.{}.", record.name, zone.name)) {
+                    match microdns_core::name::to_dns_name(&format!("{}.{}.", record.name, zone.name)).ok_or(()) {
                         Ok(n) => n,
                         Err(_) => continue,
                     }

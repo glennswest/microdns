@@ -65,7 +65,7 @@ impl ZoneTransfer {
                 format!("{}.{}", record.name, zone_fqdn)
             };
 
-            let name = match Name::from_str(&fqdn) {
+            let name = match microdns_core::name::to_dns_name(&fqdn).ok_or(()) {
                 Ok(n) => n,
                 Err(_) => continue,
             };
