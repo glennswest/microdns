@@ -584,29 +584,59 @@ impl Db {
             return Ok(exact);
         }
 
-        // Wildcard fallback: try replacing leading labels with `*`
-        // e.g. for prefix "a.b.c", try "*.b.c", then "*.c", then "*"
-        let mut remaining = prefix;
-        loop {
-            let wildcard = if let Some(pos) = remaining.find('.') {
-                format!("*{}", &remaining[pos..])
-            } else {
-                "*".to_string()
-            };
-
-            let wild_result = self.query_records(&zone.id, &wildcard, rtype)?;
-            if !wild_result.is_empty() {
-                return Ok(wild_result);
-            }
-
-            // Move up one label
-            match remaining.find('.') {
-                Some(pos) => remaining = &remaining[pos + 1..],
-                None => break,
-            }
+        // RFC 4592 §2.2.1: a name that exists in the zone — with records of
+        // another type, or as an empty non-terminal above other names — is its
+        // own closest encloser, so no wildcard may answer for it. The correct
+        // answer is NODATA, not the wildcard's data (issue #10).
+        let names = self.zone_owner_names(&zone.id)?;
+        let node_exists = |node: &str| {
+            names.iter().any(|n| {
+                n == node
+                    || n.strip_suffix(node)
+                        .is_some_and(|head| head.ends_with('.'))
+            })
+        };
+        if node_exists(prefix) {
+            return Ok(Vec::new());
         }
 
-        Ok(Vec::new())
+        // The name does not exist: find the closest encloser (the nearest
+        // existing ancestor) and consult the wildcard at exactly that level.
+        // Wildcards above the closest encloser never apply (RFC 4592 §3.3.1).
+        let mut remaining = prefix;
+        while let Some(pos) = remaining.find('.') {
+            let parent = &remaining[pos + 1..];
+            if node_exists(parent) {
+                return self.query_records(&zone.id, &format!("*.{parent}"), rtype);
+            }
+            remaining = parent;
+        }
+
+        // The zone apex is the closest encloser.
+        self.query_records(&zone.id, "*", rtype)
+    }
+
+    /// All owner names (relative to the zone) that have at least one record,
+    /// wildcards included. One entry per (name, type) index key; callers only
+    /// membership-test the list, so duplicates are not filtered.
+    fn zone_owner_names(&self, zone_id: &Uuid) -> Result<Vec<String>> {
+        let read_txn = self.inner.begin_read()?;
+        let by_zone = read_txn.open_table(RECORDS_BY_ZONE)?;
+
+        let prefix = format!("{zone_id}:");
+        let mut names = Vec::new();
+        for entry in by_zone.range(prefix.as_str()..)? {
+            let (key, _) = entry?;
+            let Some(rest) = key.value().strip_prefix(prefix.as_str()) else {
+                break; // past this zone's contiguous key range
+            };
+            // Index keys are `zone:name:type`; names never contain `:`, so
+            // the segment after the last colon is always the type.
+            if let Some((name, _)) = rest.rsplit_once(':') {
+                names.push(name.to_string());
+            }
+        }
+        Ok(names)
     }
 
     // --- Replication operations ---
@@ -1363,6 +1393,87 @@ mod tests {
 
         let results = db.query_fqdn("nope.example.com", RecordType::A).unwrap();
         assert_eq!(results.len(), 0);
+    }
+
+    /// Issue #10: the fixture measured against fallbackdns. A name with an
+    /// explicit record of one type must answer NODATA for other types instead
+    /// of falling through to the wildcard (RFC 4592 §2.2.1).
+    #[test]
+    fn test_wildcard_does_not_shadow_existing_names() {
+        let (db, _dir) = test_db();
+        let zone = make_zone("g8.lo");
+        db.create_zone("g8.lo", &zone).unwrap();
+
+        for (name, data) in [
+            ("*.fbprobe", RecordData::A("192.168.8.240".parse().unwrap())),
+            ("*.deep.fbprobe", RecordData::A("192.168.8.241".parse().unwrap())),
+            ("exact.fbprobe", RecordData::A("192.168.8.242".parse().unwrap())),
+            ("*.fbprobe", RecordData::TXT("wildcard-txt".to_string())),
+        ] {
+            db.create_record(&make_record(zone.id, name, data)).unwrap();
+        }
+
+        let query = |fqdn: &str, rtype| db.query_fqdn(fqdn, rtype).unwrap();
+
+        // Precedence is unchanged: exact beats wildcard, the deeper wildcard
+        // beats the shallower one, and wildcards span multiple labels.
+        assert_eq!(
+            query("exact.fbprobe.g8.lo", RecordType::A)[0].data,
+            RecordData::A("192.168.8.242".parse().unwrap())
+        );
+        assert_eq!(
+            query("random.fbprobe.g8.lo", RecordType::A)[0].data,
+            RecordData::A("192.168.8.240".parse().unwrap())
+        );
+        assert_eq!(
+            query("x.deep.fbprobe.g8.lo", RecordType::A)[0].data,
+            RecordData::A("192.168.8.241".parse().unwrap())
+        );
+        assert_eq!(
+            query("a.b.deep.fbprobe.g8.lo", RecordType::A)[0].data,
+            RecordData::A("192.168.8.241".parse().unwrap())
+        );
+        assert_eq!(
+            query("random.fbprobe.g8.lo", RecordType::TXT)[0].data,
+            RecordData::TXT("wildcard-txt".to_string())
+        );
+
+        // The bug: `exact.fbprobe` exists, so a TXT query for it must be
+        // NODATA — the wildcard's TXT must not leak in.
+        assert!(query("exact.fbprobe.g8.lo", RecordType::TXT).is_empty());
+    }
+
+    /// RFC 4592: an empty non-terminal exists, and only the closest
+    /// encloser's own wildcard child may synthesize an answer.
+    #[test]
+    fn test_wildcard_respects_closest_encloser() {
+        let (db, _dir) = test_db();
+        let zone = make_zone("g8.lo");
+        db.create_zone("g8.lo", &zone).unwrap();
+
+        for (name, data) in [
+            ("*.storm1", RecordData::A("192.168.8.250".parse().unwrap())),
+            ("route.storm1", RecordData::A("192.168.8.251".parse().unwrap())),
+        ] {
+            db.create_record(&make_record(zone.id, name, data)).unwrap();
+        }
+
+        let query = |fqdn: &str, rtype| db.query_fqdn(fqdn, rtype).unwrap();
+
+        // `storm1` exists only as an empty non-terminal, but it exists — the
+        // apex wildcard (none here) or any shallower wildcard must not answer.
+        assert!(query("storm1.g8.lo", RecordType::A).is_empty());
+
+        // `x.route.storm1` does not exist and its closest encloser is
+        // `route.storm1`, which has no wildcard child — so no answer, even
+        // though `*.storm1` sits one level up.
+        assert!(query("x.route.storm1.g8.lo", RecordType::A).is_empty());
+
+        // A sibling with no explicit record still gets the wildcard.
+        assert_eq!(
+            query("other.storm1.g8.lo", RecordType::A)[0].data,
+            RecordData::A("192.168.8.250".parse().unwrap())
+        );
     }
 
     #[test]

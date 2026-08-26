@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### 2026-08-26
+- **fix(dns):** Wildcard records no longer leak into explicitly defined names for other types (issue #10). `Db::query_fqdn` scoped its exact-match check per *type*: a name holding only an A record fell through to the wildcard on a TXT query, so `exact.fbprobe TXT` answered the wildcard's `"wildcard-txt"` where NODATA was correct. Per RFC 4592 §2.2.1 a name that exists in the zone — with records of another type, or as an empty non-terminal above other names — is its own closest encloser and no wildcard may answer for it. The lookup now checks existence type-independently, and consults only the closest encloser's own wildcard child (RFC 4592 §3.3.1) instead of walking every level up. The sharp edge this closes: an ACME DNS-01 lookup at an explicit route name under a cluster wildcard carrying TXT would have validated against a value never provisioned for it
+
 ## [0.9.2] - 2026-08-23
 
 ### Fixed
