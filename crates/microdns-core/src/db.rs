@@ -368,23 +368,31 @@ impl Db {
         Ok(result)
     }
 
-    /// Check if a name exists in a zone (has any record of any type).
-    /// Used to distinguish NXDOMAIN (name doesn't exist) from NOERROR
-    /// (name exists but has no records of the queried type).
+    /// Check if a name exists in a zone for rcode purposes — used to
+    /// distinguish NXDOMAIN (name doesn't exist) from NOERROR (name exists
+    /// but has no records of the queried type). A name exists when it holds
+    /// records of any type, when it is an empty non-terminal with records
+    /// below it (RFC 2308), or when the closest encloser's wildcard child
+    /// would synthesize it (RFC 4592 — a wildcard match is NOERROR even for
+    /// a type the wildcard doesn't carry).
     pub fn name_exists_in_zone(&self, zone_id: &Uuid, name: &str) -> Result<bool> {
-        let read_txn = self.inner.begin_read()?;
-        let by_zone = read_txn.open_table(RECORDS_BY_ZONE)?;
-
-        let prefix = format!("{zone_id}:{name}:");
-        let iter = by_zone.range(prefix.as_str()..)?;
-        for entry in iter {
-            let (key, _) = entry?;
-            if key.value().starts_with(&prefix) {
-                return Ok(true);
-            }
-            break; // past prefix range
+        let names = self.zone_owner_names(zone_id)?;
+        if node_exists(&names, name) {
+            return Ok(true);
         }
-        Ok(false)
+
+        // Mirror query_fqdn: only the closest encloser's own wildcard child
+        // can synthesize the name.
+        let mut remaining = name;
+        while let Some(pos) = remaining.find('.') {
+            let parent = &remaining[pos + 1..];
+            if node_exists(&names, parent) {
+                let wildcard = format!("*.{parent}");
+                return Ok(names.iter().any(|n| *n == wildcard));
+            }
+            remaining = parent;
+        }
+        Ok(names.iter().any(|n| n == "*"))
     }
 
     /// Check if a FQDN exists in any zone (has any record of any type).
@@ -402,8 +410,9 @@ impl Db {
         let zone_name = zone.name.trim_end_matches('.');
 
         if fqdn == zone_name {
-            // Zone apex — the zone itself exists
-            return self.name_exists_in_zone(&zone.id, "@");
+            // Zone apex — always exists: the zone carries an SOA even when
+            // no other records live at `@`.
+            return Ok(true);
         }
         match fqdn.strip_suffix(&format!(".{zone_name}")) {
             Some(prefix) => self.name_exists_in_zone(&zone.id, prefix),
@@ -589,14 +598,7 @@ impl Db {
         // own closest encloser, so no wildcard may answer for it. The correct
         // answer is NODATA, not the wildcard's data (issue #10).
         let names = self.zone_owner_names(&zone.id)?;
-        let node_exists = |node: &str| {
-            names.iter().any(|n| {
-                n == node
-                    || n.strip_suffix(node)
-                        .is_some_and(|head| head.ends_with('.'))
-            })
-        };
-        if node_exists(prefix) {
+        if node_exists(&names, prefix) {
             return Ok(Vec::new());
         }
 
@@ -606,7 +608,7 @@ impl Db {
         let mut remaining = prefix;
         while let Some(pos) = remaining.find('.') {
             let parent = &remaining[pos + 1..];
-            if node_exists(parent) {
+            if node_exists(&names, parent) {
                 return self.query_records(&zone.id, &format!("*.{parent}"), rtype);
             }
             remaining = parent;
@@ -1265,6 +1267,17 @@ fn most_specific_zone<'a>(zones: &'a [Zone], fqdn: &str) -> Option<&'a Zone> {
     best
 }
 
+/// Whether `node` exists in a zone whose owner names are `names`: it either
+/// holds records itself or is an empty non-terminal with records below it
+/// (some owner name ends in `.{node}`).
+fn node_exists(names: &[String], node: &str) -> bool {
+    names.iter().any(|n| {
+        n == node
+            || n.strip_suffix(node)
+                .is_some_and(|head| head.ends_with('.'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1474,6 +1487,15 @@ mod tests {
             query("other.storm1.g8.lo", RecordType::A)[0].data,
             RecordData::A("192.168.8.250".parse().unwrap())
         );
+
+        // rcode side (`fqdn_exists` → NOERROR vs NXDOMAIN): the empty
+        // non-terminal and any wildcard-covered name exist; a name under a
+        // node with no wildcard child does not. The apex always exists.
+        assert!(db.fqdn_exists("storm1.g8.lo").unwrap());
+        assert!(db.fqdn_exists("route.storm1.g8.lo").unwrap());
+        assert!(db.fqdn_exists("other.storm1.g8.lo").unwrap());
+        assert!(!db.fqdn_exists("x.route.storm1.g8.lo").unwrap());
+        assert!(db.fqdn_exists("g8.lo").unwrap());
     }
 
     #[test]

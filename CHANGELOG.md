@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### 2026-08-26
+- **fix(dns):** The NXDOMAIN/NOERROR decision (`fqdn_exists`) now follows the same RFC 4592 node model as resolution: an empty non-terminal (a name with records only below it) answers NOERROR/NODATA instead of NXDOMAIN (RFC 2308), a name the closest encloser's wildcard child would synthesize answers NOERROR even for a type the wildcard doesn't carry, and the zone apex always exists since the zone carries an SOA. Surfaced by live verification of issue #10: `deep.fbprobe.g8.lo A` returned NXDOMAIN while `*.deep.fbprobe` existed right below it
+
 ## [0.9.3] - 2026-08-26
 
 ### Fixed
