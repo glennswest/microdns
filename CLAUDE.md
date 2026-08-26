@@ -149,6 +149,11 @@ Full notes: `docs/mdns-ingest.md`.
 
 ## TODO
 
+- [ ] **In progress**: issue #10 — wildcard leaks into explicitly defined names
+      for other types. Fix `Db::query_fqdn` per RFC 4592: a name that exists
+      (any type, or as an empty non-terminal) is its own closest encloser, so
+      wildcards are never consulted for it, and only the closest encloser's
+      own wildcard child may synthesize an answer.
 - [ ] Verify NXDOMAIN fix resolves `getent hosts` failures on clients
 - [ ] Verify stormd SSH access and liveness probes work on deployed instances
 - [ ] Test stormd web dashboard (port 9080) on deployed instances
