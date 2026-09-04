@@ -94,7 +94,18 @@ impl Reconciler {
         }
 
         // Upserts (idempotent when unchanged).
+        //
+        // Cluster service and pod ranges are this instance's to answer for —
+        // no peer serves them — so the reverse zone is created here on
+        // purpose. Without this, `sync_ptr_for_a` would (correctly) refuse to
+        // grow a reverse zone for an address outside any local DHCP pool.
         for (ip, name) in &want {
+            if let IpAddr::V4(v4) = ip {
+                if let Err(e) = reverse::ensure_reverse_zone(&self.db, &reverse::reverse_zone_v4(*v4)) {
+                    warn!("k8s: ensure reverse zone for {v4}: {e}");
+                    continue;
+                }
+            }
             let res = match ip {
                 IpAddr::V4(v4) => reverse::sync_ptr_for_a(
                     &self.db,
