@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### 2026-09-04
+- **chore(ops):** g16 (192.168.16.0/20) reverse forwarders added live to the five instances that lacked them — gw, g8, g9, g100 and the mdns holder — via `POST /dns/forwarders`: all sixteen `16-31.168.192.in-addr.arpa` zones now forward to 192.168.31.252. Before this, `dig -x 192.168.16.2` answered from g10/g11/gt only. Verified on every instance after the change.
+- **docs:** Record the g16 deployment on rose1 in `CLAUDE.md`: container `g16_dns_microdns`, veth 192.168.31.252/20 on `bridge-g16`, RouterOS `relay-g16` → 192.168.31.252, no RouterOS DHCP server or static DNS in play.
+
 ## [0.9.4] - 2026-08-26
 
 ### Fixed

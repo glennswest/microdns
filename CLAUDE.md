@@ -147,6 +147,24 @@ Design notes worth keeping in mind:
 
 Full notes: `docs/mdns-ingest.md`.
 
+## g16 on rose1 (verified 2026-09-04)
+
+The g16 flat /20 (192.168.16.0/20, dsw1) is served by microdns, never by
+RouterOS's own DHCP or DNS. On rose1 (192.168.1.1) that is:
+
+- container `g16_dns_microdns`, root-dir `/raid1/images/g16_dns_microdns`,
+  veth `veth_g16_dns_0` = 192.168.31.252/20 on `bridge-g16`, gateway .16.1
+- `/ip/dhcp-relay` entry `relay-g16` on `bridge-g16` → 192.168.31.252;
+  `/ip/dhcp-server` is empty on the whole router
+- pool `g16-pool` is 192.168.30.1–.254 in the API (the reference TOML's
+  16.100–30.254 range was narrowed in the running config); 19 reservations
+- every peer forwards `g16.lo` and all sixteen `16-31.168.192.in-addr.arpa`
+  zones to 192.168.31.252 (the reverse set was added live to gw/g8/g9/g100/mdns
+  on 2026-09-04 — g10/g11/gt already had it)
+
+Health: `curl http://192.168.31.252:8080/api/v1/health`. The reference config
+is `config/deploy/microdns-g16.toml`; the running config is in redb.
+
 ## TODO
 
 - [x] Issue #10 (v0.9.3): wildcard records no longer leak into explicitly
