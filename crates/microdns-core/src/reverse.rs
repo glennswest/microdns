@@ -8,6 +8,7 @@ use crate::db::Db;
 use crate::error::Result;
 use crate::types::{Record, RecordData, RecordSource, RecordType, SoaData, Zone};
 use chrono::Utc;
+use ipnet::Ipv4Net;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::debug;
 use uuid::Uuid;
@@ -110,8 +111,34 @@ pub fn ensure_reverse_zone(db: &Db, zone_name: &str) -> Result<Zone> {
     Ok(zone)
 }
 
+/// Whether this instance serves the reverse zone an IPv4 address falls in.
+///
+/// A PTR is only synthesized into a reverse zone this instance owns: one that
+/// already exists locally, or one for an address inside a locally configured
+/// DHCP pool subnet (auto-created on first use, which is how a fresh instance
+/// gets its reverse zone at all). An address outside both belongs to a peer.
+/// Creating its /24 here — as one A record pointing across networks used to —
+/// shadows the forwarder for that /24 with an authoritative NXDOMAIN for every
+/// other address in it, which is exactly the outage seen on every instance
+/// that had ever named a host on another network.
+pub fn serves_reverse_zone_v4(db: &Db, ip: Ipv4Addr, rev_zone_name: &str) -> Result<bool> {
+    if db.get_zone_by_name(rev_zone_name)?.is_some() {
+        return Ok(true);
+    }
+    for pool in db.list_dhcp_pools()? {
+        if let Ok(net) = pool.subnet.parse::<Ipv4Net>() {
+            if net.contains(&ip) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Create or update the PTR record for an A record.
-/// Auto-creates the reverse zone if it doesn't exist.
+/// Auto-creates the reverse zone if it doesn't exist and this instance serves
+/// it (see [`serves_reverse_zone_v4`]); an address on another network is left
+/// to that network's instance and the forwarder pointing at it.
 /// `source` is carried through to the PTR so it is labelled with whatever
 /// created the forward record it mirrors.
 pub fn sync_ptr_for_a(
@@ -123,6 +150,10 @@ pub fn sync_ptr_for_a(
     source: RecordSource,
 ) -> Result<()> {
     let rev_zone_name = reverse_zone_v4(ip);
+    if !serves_reverse_zone_v4(db, ip, &rev_zone_name)? {
+        debug!("skipping PTR for {ip}: {rev_zone_name} is not served by this instance");
+        return Ok(());
+    }
     let rev_zone = ensure_reverse_zone(db, &rev_zone_name)?;
     let ptr_name = ptr_name_v4(ip);
     let target = ptr_target(record_name, forward_zone_name);
@@ -315,6 +346,36 @@ mod tests {
         (db, dir)
     }
 
+    fn make_pool(db: &Db, subnet: &str) {
+        let now = Utc::now();
+        db.create_dhcp_pool(&crate::types::DhcpPool {
+            id: Uuid::new_v4(),
+            name: subnet.to_string(),
+            range_start: String::new(),
+            range_end: String::new(),
+            subnet: subnet.to_string(),
+            gateway: String::new(),
+            dns_servers: vec![],
+            domain: String::new(),
+            lease_time_secs: 600,
+            next_server: None,
+            boot_file: None,
+            boot_file_efi: None,
+            ipxe_boot_url: None,
+            root_path: None,
+            ntp_servers: None,
+            domain_search: None,
+            mtu: None,
+            static_routes: None,
+            log_server: None,
+            time_offset: None,
+            wpad_url: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+    }
+
     fn make_forward_zone(db: &Db, name: &str) -> Zone {
         let zone = Zone {
             id: Uuid::new_v4(),
@@ -388,6 +449,7 @@ mod tests {
     fn test_sync_and_delete_ptr_v4() {
         let (db, _dir) = test_db();
         make_forward_zone(&db, "g10.lo");
+        make_pool(&db, "192.168.10.0/24");
 
         let ip: Ipv4Addr = "192.168.10.5".parse().unwrap();
 
@@ -417,6 +479,38 @@ mod tests {
         delete_ptr_for_a(&db, "server2", "g10.lo", ip).unwrap();
         let ptrs = db.query_records(&rev_zone.id, "5", RecordType::PTR).unwrap();
         assert_eq!(ptrs.len(), 0);
+    }
+
+    #[test]
+    fn test_sync_skips_foreign_network() {
+        let (db, _dir) = test_db();
+        make_forward_zone(&db, "g8.lo");
+        make_pool(&db, "192.168.8.0/24");
+
+        // An A record on g8.lo that points into g10's range must not grow a
+        // 10.168.192 zone here: that zone would shadow the g10 forwarder.
+        let ip: Ipv4Addr = "192.168.10.50".parse().unwrap();
+        sync_ptr_for_a(&db, "fastregistry", "g8.lo", ip, 300, RecordSource::Manual).unwrap();
+        assert!(db
+            .get_zone_by_name("10.168.192.in-addr.arpa")
+            .unwrap()
+            .is_none());
+
+        // A /20 pool owns all sixteen /24 reverse zones under it.
+        make_pool(&db, "192.168.16.0/20");
+        let ip: Ipv4Addr = "192.168.29.7".parse().unwrap();
+        sync_ptr_for_a(&db, "host", "g8.lo", ip, 300, RecordSource::Manual).unwrap();
+        assert!(db
+            .get_zone_by_name("29.168.192.in-addr.arpa")
+            .unwrap()
+            .is_some());
+
+        // A reverse zone that already exists locally is always served, pool or not.
+        ensure_reverse_zone(&db, "200.168.192.in-addr.arpa").unwrap();
+        let ip: Ipv4Addr = "192.168.200.5".parse().unwrap();
+        sync_ptr_for_a(&db, "mgmt", "g8.lo", ip, 300, RecordSource::Manual).unwrap();
+        let z = db.get_zone_by_name("200.168.192.in-addr.arpa").unwrap().unwrap();
+        assert_eq!(db.query_records(&z.id, "5", RecordType::PTR).unwrap().len(), 1);
     }
 
     #[test]
@@ -475,6 +569,7 @@ mod tests {
     fn test_sync_ptr_zone_apex() {
         let (db, _dir) = test_db();
         make_forward_zone(&db, "g10.lo");
+        make_pool(&db, "192.168.10.0/24");
 
         let ip: Ipv4Addr = "192.168.10.1".parse().unwrap();
         sync_ptr_for_a(&db, "@", "g10.lo", ip, 300, RecordSource::Manual).unwrap();

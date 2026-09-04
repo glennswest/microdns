@@ -162,6 +162,19 @@ RouterOS's own DHCP or DNS. On rose1 (192.168.1.1) that is:
   zones to 192.168.31.252 (the reverse set was added live to gw/g8/g9/g100/mdns
   on 2026-09-04 — g10/g11/gt already had it)
 
+### Reverse zones: one owner per /24
+
+Every instance forwards every other network's `in-addr.arpa` zones to that
+network's DNS (added live across all nine on 2026-09-04). This only works if
+no instance hosts a *local* copy of a peer's reverse zone: hickory answers
+from the local zone first, so a one-record `10.168.192.in-addr.arpa` on g8
+turns every other g10 address into an authoritative NXDOMAIN there. PTR sync
+(`reverse::serves_reverse_zone_v4`) therefore only creates or writes into a
+reverse zone that already exists locally or whose address is inside a local
+DHCP pool subnet. An instance with DHCP off (gt, g100, mdns) needs its own
+reverse zone created once by hand, exactly as `scripts/bootstrap-gw252.sh`
+does — after that PTRs flow into it as before.
+
 Health: `curl http://192.168.31.252:8080/api/v1/health`. The reference config
 is `config/deploy/microdns-g16.toml`; the running config is in redb.
 
