@@ -2,8 +2,12 @@
 
 ## [Unreleased]
 
-### 2026-09-04
+## [0.9.5] - 2026-09-04
+
+### Fixed / Changed
 - **fix(dns):** PTR sync no longer creates reverse zones for networks this instance does not serve. `sync_ptr_for_a` now asks `serves_reverse_zone_v4` first: the reverse zone must already exist locally or the address must fall inside a local DHCP pool subnet (a /20 pool owns all sixteen /24s beneath it). Before, one A record pointing across networks (`fastregistry.g8.lo → 192.168.10.50`, an IPMI host named on g16, a Kubernetes pod address) grew a one-record `10.168.192.in-addr.arpa` on that instance, and that local zone shadowed the forwarder with an authoritative NXDOMAIN for every other address in the /24. Found on every instance while adding the reverse forwarders: gw hosted empty 10/11 zones, gt hosted 10 and 31, the mdns holder hosted 1/8/9 from discovered devices. IPv6 PTR sync is unchanged (no v6 pools live in redb yet to check against).
+- **fix(k8s):** The Kubernetes reconciler creates the cluster reverse zone it manages PTRs in before syncing, since no peer instance serves cluster service or pod ranges.
+- **feat(scripts):** `scripts/prune-shadow-reverse-zones.py` — lists (or with `--apply` deletes) reverse zones an instance hosts for networks it does not own, derived from its DHCP pool subnets. Dry run on 2026-09-04 found twelve across seven instances.
 - **chore(ops):** Reverse forwarders for every network added live to every instance that lacked them (all nine now forward each peer's `in-addr.arpa` zones — 1, 8, 9, 10, 11, 12, 16-31, 100, 200 — to that peer's DNS, minus their own). g10/g11/gt were only missing 12 and 100; gw/g8/g9/g100/mdns/g16 were missing all of them.
 - **chore(ops):** g16 (192.168.16.0/20) reverse forwarders added live to the five instances that lacked them — gw, g8, g9, g100 and the mdns holder — via `POST /dns/forwarders`: all sixteen `16-31.168.192.in-addr.arpa` zones now forward to 192.168.31.252. Before this, `dig -x 192.168.16.2` answered from g10/g11/gt only. Verified on every instance after the change.
 - **docs:** Record the g16 deployment on rose1 in `CLAUDE.md`: container `g16_dns_microdns`, veth 192.168.31.252/20 on `bridge-g16`, RouterOS `relay-g16` → 192.168.31.252, no RouterOS DHCP server or static DNS in play.
