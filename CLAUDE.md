@@ -186,6 +186,11 @@ is `config/deploy/microdns-g16.toml`; the running config is in redb.
       Next: build the 0.9.5 arm64 image on dev (sc-build), put the tarball in
       `/raid1/tarballs/` on rose1 and recreate `g16_dns_microdns` from it with
       the same interface/mounts/dns/hostname/user.
+- [x] 2026-09-30: pruned 13 shadow reverse zones across 7 instances with
+      `scripts/prune-shadow-reverse-zones.py --apply` (incl. g10's and gt's
+      copies of g16's `31.168.192`). All nine are still on 0.9.4, which can
+      recreate them from a cross-network A record — re-run the script after
+      any such record appears, until 0.9.5 is rolled out.
 - [ ] Rose1 stall 2026-09-28 17:44 CDT: every container froze together
       (host-level, not microdns); owner rebooted at 18:00. Cause not in the
       logs. Stormstar disabled (start-on-boot=no); BMH/ipmiserial were already
