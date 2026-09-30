@@ -180,6 +180,16 @@ is `config/deploy/microdns-g16.toml`; the running config is in redb.
 
 ## TODO
 
+- [ ] **In progress 2026-09-30 — g16 to parity, on 0.9.5.** Pool widened live
+      to 192.168.16.100–192.168.30.254 (was 30.1–30.254; 16.1–.99 and all of
+      31.x stay static, reservations are pre-allocated inside the range).
+      Next: build the 0.9.5 arm64 image on dev (sc-build), put the tarball in
+      `/raid1/tarballs/` on rose1 and recreate `g16_dns_microdns` from it with
+      the same interface/mounts/dns/hostname/user.
+- [ ] Rose1 stall 2026-09-28 17:44 CDT: every container froze together
+      (host-level, not microdns); owner rebooted at 18:00. Cause not in the
+      logs. Stormstar disabled (start-on-boot=no); BMH/ipmiserial were already
+      removed 09-29.
 - [x] Issue #10 (v0.9.3): wildcard records no longer leak into explicitly
       defined names for other types — `Db::query_fqdn` follows RFC 4592
       closest-encloser rules (existing names answer NODATA; only the closest
